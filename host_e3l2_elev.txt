@@ -1,0 +1,40 @@
+wait 3
+press start 2
+wait 3
+press start 2
+wait 10
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+god
+goto 5696 20864 1024
+wait 5
+stat in_car_floor1
+shot W0_car1
+press c 2
+wait 8
+stat rising
+shot W1_rising
+wait 30
+stat warped
+wait 80
+stat arrived_floor2
+shot W2_floor2
+wait 10
+press c 2
+wait 120
+stat back_floor1
+shot W3_back

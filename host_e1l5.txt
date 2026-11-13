@@ -1,0 +1,36 @@
+# E1L5 The Abyss: start it from the skill menu, step on the boss arena's
+# touchplate (activator 4650): its RESPAWN brings in the Battlelord (BOSS1,
+# pal 0, 4500 HP, 80x80) ~12 ticks later; kill it with RPGs (god mode) and
+# the level completes ("ifspritepal 0 endofgame 52").
+wait 3
+press start 2
+wait 3
+press right 2
+wait 2
+press right 2
+wait 2
+press right 2
+wait 2
+press start 2
+wait 20
+stat e1l5_start
+god
+give
+goto -21952 38400 1024
+wait 3
+count 2630
+wait 30
+count 2630
+stat boss_arrived
+face
+weapon 4
+hold b
+wait 150
+face
+wait 150
+face
+wait 150
+face
+wait 150
+release b
+stat end

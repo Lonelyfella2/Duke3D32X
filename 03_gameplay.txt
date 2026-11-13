@@ -1,0 +1,28 @@
+run 240
+press start 8      # skip the 3D Realms screen
+run 60
+press start 8
+run 60
+press start 8
+run 180
+shot play_a
+tele
+hold up
+run 90
+shot play_b
+release up
+tele
+hold right
+run 30
+release right
+press b 6
+run 30
+shot play_c
+tele
+hold up
+run 120
+release up
+press c 6
+run 60
+shot play_d
+tele

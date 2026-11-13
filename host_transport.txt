@@ -1,0 +1,25 @@
+# SE 7 transporters on the other levels.
+# E1L3: teleporter pad (sector 288 -> 286, facing 1024), then the pool:
+# crouch to dive (459 -> 460), hold jump to surface (460 -> 459).
+wait 3
+press start 2
+wait 3
+press right 2
+wait 2
+press right 2
+wait 2
+press start 2
+wait 5
+god
+goto 33344 14848 0
+wait 4
+stat pad
+goto 26112 1600 0
+hold c down
+wait 3
+release c down
+pstat dived
+hold a
+wait 30
+release a
+pstat surfaced

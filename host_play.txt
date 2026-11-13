@@ -1,0 +1,26 @@
+wait 3
+shot h_title
+press start 2
+wait 3
+shot h_menu
+press start 2
+wait 10
+shot h_start
+hold up
+wait 20
+shot h_walk1
+release up
+hold right
+wait 12
+release right
+shot h_turn
+press b 2
+wait 8
+shot h_fire
+hold up
+wait 30
+release up
+shot h_walk2
+press c 2
+wait 20
+shot h_use

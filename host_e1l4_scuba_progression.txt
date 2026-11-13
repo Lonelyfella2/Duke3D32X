@@ -1,0 +1,18 @@
+# Start E1L3 without scuba, then advance normally to Toxic Dump.
+wait 3
+press start 2
+wait 3
+press right 2
+wait 2
+press right 2
+wait 2
+press start 2
+wait 8
+scuba_status before
+shotgun_status before
+win
+wait 4
+press start 2
+wait 15
+scuba_status after
+shotgun_status after

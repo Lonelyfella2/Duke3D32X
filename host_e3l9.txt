@@ -1,0 +1,78 @@
+wait 3
+press start 2
+wait 3
+press start 2
+wait 10
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+win
+wait 4
+press start 2
+wait 12
+stat e3l9_start
+shot S0_start
+wait 30
+stat lift_t30
+wait 90
+stat lift_t120
+shot S1_mid
+wait 90
+stat lift_t210
+shot S2_top
+god
+give
+weapon 4
+face
+wait 2
+shot S3_boss
+stat armed
+hold b
+wait 150
+face
+wait 150
+stat fight300
+shot S4_fight
+face
+wait 150
+face
+wait 150
+stat fight600
+face
+wait 150
+face
+wait 150
+stat fight900
+shot S5_fight
+face
+wait 150
+face
+wait 150
+stat fight1200
+release b
+wait 60
+stat after
+shot S6_after
+wait 120
+stat end
+shot S7_end
+press start 2
+wait 30
+shot S8_final

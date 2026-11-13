@@ -1,0 +1,24 @@
+# E1L1 air vent: walk off the roof into the vent shaft (sector 269), fall,
+# get handed to the lower shaft (sector 256) by the silent SE 7 pair, land.
+# Expect: sect 269 -> 256 with the fall speed kept, health drops ~30 on
+# landing (DUKE_LAND + DUKE_LAND_HURT), the view dips and is back at
+# horiz 100, then the six-pack at the bottom heals Duke.
+wait 3
+press start 2
+wait 3
+press start 2
+wait 5
+goto -25860 13950 512
+pstat roof
+hold up
+wait 4
+release up
+wait 10
+pstat falling
+wait 20
+pstat lower_shaft
+wait 10
+pstat landed
+wait 12
+pstat recentred
+shot vent_after

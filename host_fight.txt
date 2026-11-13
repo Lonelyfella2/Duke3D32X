@@ -1,0 +1,45 @@
+wait 3
+press start 2
+wait 3
+press start 2
+wait 5
+god
+goto 22564 59904 0
+wait 3
+shot f_0
+dump
+face
+press b 2
+wait 6
+face
+press b 2
+wait 6
+face
+press b 2
+wait 6
+shot f_1
+face
+press b 2
+wait 6
+face
+press b 2
+wait 6
+face
+press b 2
+wait 6
+face
+press b 2
+wait 6
+press b 2
+wait 20
+shot f_2
+wait 30
+shot f_3
+probe 2030
+probe 2040
+probe 2048
+probe 10
+picat 110 40
+picat 115 45
+picat 120 50
+picat 105 38
