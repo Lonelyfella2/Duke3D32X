@@ -54,6 +54,8 @@ void render_frame_s(int x0, int x1);
 void render_mirror(const rstats_t *m);     /* master: reflected pass + flip */
 void render_merge_mirror(rstats_t *out, const rstats_t *a, const rstats_t *b);
 extern rstats_t rstats_m, rstats_s;
+extern int16_t skyangle[RMAXXDIM];
+extern int32_t skyangle_width;
 
 /* gameplay hook: per-sprite picture/flags for this view (read-only, called
  * by both CPUs); return 0 to skip the sprite. */

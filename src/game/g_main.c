@@ -245,9 +245,14 @@ static void draw_hud(void)
 /* The 32X ignores byte writes of palette index 0, even through the normal
  * framebuffer address. Pick a nonzero equivalent of the current colour 0 so
  * native-resolution sprite pixels can still overwrite the background. */
+static uint8_t cached_oz;
+static int cached_oz_mode = -999;
+static const uint16_t *cached_oz_pal;
+
 static uint8_t weapon_opaque_zero(void)
 {
     const uint16_t *cram = shown_pal ? shown_pal : cur_cram;
+    if (cached_oz_pal == cram && cached_oz_mode == cur_palmode) return cached_oz;
     uint16_t z = cram[0];
     int zr = z & 31, zg = (z >> 5) & 31, zb = (z >> 10) & 31;
     int best = 1, bestdist = 0x7fffffff;
@@ -257,7 +262,10 @@ static uint8_t weapon_opaque_zero(void)
         int d = r*r + g*g + b*b;
         if (d < bestdist) { bestdist = d; best = i; if (!d) break; }
     }
-    return (uint8_t)best;
+    cached_oz = (uint8_t)best;
+    cached_oz_mode = cur_palmode;
+    cached_oz_pal = cram;
+    return cached_oz;
 }
 
 static void weapon_pic(int x, int y, int pic, int shade, int pal, int flip)
@@ -675,6 +683,7 @@ static int play_level(void)
             pad_prev = pad_now;
             pad_now = plat_read_input();
             if ((pad_now & ~pad_prev) & BTN_START) {
+                plat_flip_wait();
                 if (pl.dead_flag && deadwait > 30) return 0;
                 if (!pl.dead_flag) { int r = pause_menu(); if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
             }
@@ -682,12 +691,35 @@ static int play_level(void)
             acc -= rate;
             n++;
             if (pl.dead_flag) deadwait++;
-            if (pl.level_done && --pl.timebeforeexit <= 0) return 1;
+            if (pl.level_done && --pl.timebeforeexit <= 0) { plat_flip_wait(); return 1; }
         }
-        if (n == 0 && acc < rate) { /* nothing to do yet: still render to keep animations smooth */ }
+        plat_flip_wait();
+        if (n == 0) {
+            now = plat_ticks();
+            acc += (int32_t)(now - last) * 30;
+            last = now;
+            while (acc >= rate && n < 4) {
+                pad_prev = pad_now;
+                pad_now = plat_read_input();
+                if ((pad_now & ~pad_prev) & BTN_START) {
+                    if (pl.dead_flag && deadwait > 30) return 0;
+                    if (!pl.dead_flag) { int r = pause_menu(); if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
+                }
+                game_tick();
+                acc -= rate;
+                n++;
+                if (pl.dead_flag) deadwait++;
+                if (pl.level_done && --pl.timebeforeexit <= 0) return 1;
+            }
+        }
         render_game();
-        plat_flip();
-        if (shown_pal) { cur_palmode = -1; update_palette(); }   /* picture palette out */
+        if (shown_pal) {
+            plat_flip();
+            cur_palmode = -1;
+            update_palette();   /* picture palette out */
+        } else {
+            plat_flip_request();
+        }
         frames++;
         plat_telemetry((uint16_t)(0x3000 | (level_index << 8) | (pl.health & 0xff)), (uint16_t)frames);
     }
