@@ -106,7 +106,7 @@ static void start_voice(const sndcmd_t *c)
     if (best < 0) {
         uint32_t most = 0;
         for (v = 0; v < NUM_VOICES; v++)
-            if (!voices[v].loop && voices[v].pos >= most) { most = voices[v].pos; best = v; }
+            if (!voices[v].loop && voices[v].decoded >= most) { most = voices[v].decoded; best = v; }
         if (best < 0) return;
     }
     voice_t *vo = &voices[best];
@@ -118,7 +118,7 @@ static void start_voice(const sndcmd_t *c)
     /* step = rate/22050 in 16.16 without the divide unit: (rate*194788)>>16 */
     uint32_t base = ((uint32_t)s->rate * 194788u) >> 16;
     vo->step = (uint32_t)(((uint64_t)base * (uint32_t)(c->pitch > 0 ? c->pitch : 65536)) >> 16);
-    vo->pos = 0; vo->decoded = 0;
+    vo->pos = 0x10000u; vo->decoded = 0;
     vo->pred = vo->start_pred; vo->index = vo->start_index; vo->cur = vo->pred;
     int vol = c->vol, pan = c->pan;
     if (vol > 255) vol = 255;
@@ -173,36 +173,68 @@ static inline int32_t decode_next(voice_t *vo)
 static void mix_buffer(uint32_t *out)
 {
     static int32_t accl[MIX_FRAMES], accr[MIX_FRAMES];
-    int f, v;
-    for (f = 0; f < MIX_FRAMES; f++) { accl[f] = 0; accr[f] = 0; }
+    int f, v, any = 0;
     for (v = 0; v < NUM_VOICES; v++) {
         voice_t *vo = &voices[v];
         if (!vo->active) continue;
         int32_t vl = vo->voll, vr = vo->volr, cur = vo->cur;
-        uint32_t pos = vo->pos, step = vo->step, len = vo->len;
-        for (f = 0; f < MIX_FRAMES; f++) {
-            uint32_t want = pos >> 16;
-            while (vo->decoded <= want) {
-                if (vo->decoded >= len) {
-                    if (vo->loop) { vo->decoded = 0; vo->pred = vo->start_pred; vo->index = vo->start_index; pos &= 0xffff; want = 0; }
-                    else { vo->active = 0; goto voice_done; }
+        int32_t sL = cur * vl, sR = cur * vr;
+        uint32_t frac = vo->pos, step = vo->step, len = vo->len;
+        if (!any) {
+            for (f = 0; f < MIX_FRAMES; f++) {
+                if (frac >= 0x10000u) {
+                    do {
+                        frac -= 0x10000u;
+                        if (vo->decoded >= len) {
+                            if (vo->loop) { vo->decoded = 0; vo->pred = vo->start_pred; vo->index = vo->start_index; }
+                            else {
+                                vo->active = 0;
+                                for (; f < MIX_FRAMES; f++) { accl[f] = 0; accr[f] = 0; }
+                                goto voice_done;
+                            }
+                        }
+                        cur = decode_next(vo);
+                    } while (frac >= 0x10000u);
+                    sL = cur * vl; sR = cur * vr;
                 }
-                cur = decode_next(vo);
+                accl[f] = sL;
+                accr[f] = sR;
+                frac += step;
             }
-            accl[f] += cur * vl;
-            accr[f] += cur * vr;
-            pos += step;
+        } else {
+            for (f = 0; f < MIX_FRAMES; f++) {
+                if (frac >= 0x10000u) {
+                    do {
+                        frac -= 0x10000u;
+                        if (vo->decoded >= len) {
+                            if (vo->loop) { vo->decoded = 0; vo->pred = vo->start_pred; vo->index = vo->start_index; }
+                            else { vo->active = 0; goto voice_done; }
+                        }
+                        cur = decode_next(vo);
+                    } while (frac >= 0x10000u);
+                    sL = cur * vl; sR = cur * vr;
+                }
+                accl[f] += sL;
+                accr[f] += sR;
+                frac += step;
+            }
         }
 voice_done:
-        vo->pos = pos; vo->cur = cur;
+        vo->pos = frac; vo->cur = cur;
+        any = 1;
     }
-    for (f = 0; f < MIX_FRAMES; f++) {
-        int32_t l = accl[f] >> 15, r = accr[f] >> 15;          /* full-scale voice ~ +-256 */
-        if (l > 384) l = 384 + ((l - 384) >> 2); else if (l < -384) l = -384 + ((l + 384) >> 2);
-        if (r > 384) r = 384 + ((r - 384) >> 2); else if (r < -384) r = -384 + ((r + 384) >> 2);
-        if (l > 500) l = 500; else if (l < -500) l = -500;
-        if (r > 500) r = 500; else if (r < -500) r = -500;
-        out[f] = ((uint32_t)(center + l) << 16) | (uint32_t)(uint16_t)(center + r);
+    if (!any) {
+        uint32_t sil = ((uint32_t)center << 16) | (uint16_t)center;
+        for (f = 0; f < MIX_FRAMES; f++) out[f] = sil;
+    } else {
+        for (f = 0; f < MIX_FRAMES; f++) {
+            int32_t l = accl[f] >> 15, r = accr[f] >> 15;          /* full-scale voice ~ +-256 */
+            if (l > 384) l = 384 + ((l - 384) >> 2); else if (l < -384) l = -384 + ((l + 384) >> 2);
+            if (r > 384) r = 384 + ((r - 384) >> 2); else if (r < -384) r = -384 + ((r + 384) >> 2);
+            if (l > 500) l = 500; else if (l < -500) l = -500;
+            if (r > 500) r = 500; else if (r < -500) r = -500;
+            out[f] = ((uint32_t)(center + l) << 16) | (uint32_t)(uint16_t)(center + r);
+        }
     }
     for (v = 0; v < NUM_VOICES; v++) SH->playing[v] = voices[v].active ? voices[v].id : -1;
     SH->mixed++;

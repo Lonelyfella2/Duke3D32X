@@ -31,6 +31,8 @@ void hw_init(void);
 void hw_set_palette(const uint16_t *cram, int first, int count);
 void hw_wait_vblank(void);
 void hw_flip(void);                 /* show the drawn buffer, wait until swapped */
+void hw_flip_request(void);
+void hw_flip_wait(void);
 uint32_t hw_ticks(void);            /* vblank count                             */
 uint16_t hw_read_pad(int port);
 int hw_is_pal(void);

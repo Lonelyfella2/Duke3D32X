@@ -2,6 +2,8 @@
 #include "render.h"
 
 rview_t rview;
+int16_t skyangle[RMAXXDIM];
+int32_t skyangle_width;
 
 void render_init(void)
 {

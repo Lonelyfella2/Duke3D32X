@@ -95,6 +95,8 @@ uint32_t plat_read_input(void)
     return pad | (press_left > 0 ? press_mask : 0) | BTN_SIX * 0;
 }
 
+void plat_flip_request(void) { plat_flip(); }
+void plat_flip_wait(void) {}
 void plat_flip(void)
 {
     cur ^= 1;

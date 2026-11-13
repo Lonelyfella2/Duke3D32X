@@ -16,6 +16,8 @@ int       plat_pal(void);
 uint32_t  plat_read_input(void);            /* pad bits, SEGA_CTRL layout */
 void      plat_set_palette(const uint16_t *cram);
 void      plat_flip(void);
+void      plat_flip_request(void);
+void      plat_flip_wait(void);
 void      plat_telemetry(uint16_t a, uint16_t b);
 /* sound: id = Duke sound number; vol 0..255; pan -128..127; pitch 16.16 rate scale */
 void      plat_sound_play(int id, int vol, int pan, int32_t pitch, int loop, int tag);

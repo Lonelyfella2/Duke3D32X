@@ -55,11 +55,27 @@ static void setup_linetable(void)
     for (int i = 0; i < ((VIEW_H + HUD_LINES) * 320) / 4; i++) p[i] = 0;
 }
 
-static void flip_now(void)
+static volatile int flip_pending = 0;
+
+void hw_flip_request(void)
 {
+    if (flip_pending) hw_flip_wait();
     MARS_VDP_FBCTL = current_fb ^ 1;
+    flip_pending = 1;
+}
+
+void hw_flip_wait(void)
+{
+    if (!flip_pending) return;
     while ((MARS_VDP_FBCTL & MARS_VDP_FS) == current_fb);
     current_fb ^= 1;
+    flip_pending = 0;
+}
+
+static void flip_now(void)
+{
+    hw_flip_request();
+    hw_flip_wait();
 }
 
 void hw_init(void)
@@ -84,7 +100,6 @@ void hw_set_palette(const uint16_t *cram, int first, int count)
     volatile uint16_t *c = &MARS_CRAM;
     for (int i = 0; i < count; i++) c[first + i] = cram[i];
 }
-
 void hw_wait_vblank(void)
 {
     uint32_t t = mars_vblank_count;

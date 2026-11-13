@@ -12,11 +12,19 @@
 
 extern const uint8_t dk_gamedata[];
 
+
+static inline void wdt_start7(void)
+{
+    *(volatile uint16_t *)0xFFFFFE80 = 0xA527; /* IT mode, TME=1, CKS=7 (Fs/8192 ~ 356us/tick) */
+    *(volatile uint16_t *)0xFFFFFE80 = 0x5A00;
+}
+static inline uint8_t wdt_read(void) { return *(volatile uint8_t *)0xFFFFFE81; }
+
 /* master -> slave job, always accessed through the cache-through mirror */
 typedef struct {
     int32_t x0, x1;
     int32_t frame;
-    int32_t ticks;          /* slave render time in FRT ticks */
+    int32_t ticks;          /* slave render time in WDT ticks */
 } slavejob_t;
 static slavejob_t slavejob;
 #define SJ ((volatile slavejob_t *)((uintptr_t)&slavejob | 0x20000000))
@@ -33,7 +41,9 @@ void secondary(void)
         switch (cmd) {
         case SCMD_RENDER:
             CacheControl(SH2_CCTL_CP | SH2_CCTL_CE);    /* see master's world updates */
+            wdt_start7();
             render_frame_s(SJ->x0, SJ->x1);
+            SJ->ticks = (int32_t)wdt_read();
             break;
         case SCMD_SNDINIT:
             snd_slave_init();
@@ -63,18 +73,25 @@ void plat_render_view(void)
     SJ->x0 = split_x;
     SJ->x1 = VIEW_W - 1;
     MARS_SYS_COMM4 = SCMD_RENDER;
-    uint32_t t0 = mars_vblank_count;
+    wdt_start7();
     render_frame_m(0, split_x - 1);
-    uint32_t tm = mars_vblank_count - t0;
+    int32_t tm = (int32_t)wdt_read();
     while (MARS_SYS_COMM4 != 0) {}
-    uint32_t ts = mars_vblank_count - t0;
+    int32_t ts = SJ->ticks;
     {   /* slave stats via the cache-through mirror */
         rstats_t sl = *(volatile rstats_t *)((uintptr_t)&rstats_s | 0x20000000);
         render_merge_mirror(&mirror_seen, &rstats_m, &sl);
     }
-    /* crude load balancing: move the split toward the CPU that finished first */
-    if (ts > tm + 1 && split_x < VIEW_W - 24) split_x += 2;
-    else if (tm > ts + 1 && split_x > 24) split_x -= 2;
+    int32_t diff = ts - tm;
+    if (diff > 2 || diff < -2) {
+        int32_t step = diff >> 2;
+        if (step == 0) step = (diff > 0) ? 1 : -1;
+        if (step > 8) step = 8;
+        else if (step < -8) step = -8;
+        split_x += step;
+        if (split_x < 24) split_x = 24;
+        if (split_x > VIEW_W - 24) split_x = VIEW_W - 24;
+    }
 }
 
 pixel_t *plat_hud_base(void) { return (pixel_t *)(0x24000000 + FB_HUD_OFS * 2); }
@@ -89,6 +106,7 @@ pixel_t *plat_view_base(void) { return (pixel_t *)(0x24000000 + FB_VIEW_OFS * 2)
  * doubled view rows; static screens that are only re-flipped keep theirs. */
 #define FB_TXT_OFS (FB_HUD_OFS + HUD_LINES * FB_PITCH16)
 static uint8_t txt_line_on[VIEW_H * 2];
+static int txt_any_used = 2;
 
 uint8_t *plat_text_line(int sy)
 {
@@ -102,6 +120,7 @@ uint8_t *plat_text_line(int sy)
         for (int i = 0; i < 80; i++) dst[i] = src[i];
         FB16[sy] = (uint16_t)ofs;
         txt_line_on[sy] = 1;
+        txt_any_used = 2;
     }
     return (uint8_t *)(0x24000000 + ofs * 2);
 }
@@ -115,12 +134,15 @@ uint8_t *plat_screen_line(int sy)
     if (!txt_line_on[sy]) {
         FB16[sy] = (uint16_t)ofs;
         txt_line_on[sy] = 1;
+        txt_any_used = 2;
     }
     return (uint8_t *)(0x24000000 + ofs * 2);
 }
 
 static void txt_lines_reset(void)
 {
+    if (!txt_any_used) return;
+    txt_any_used--;
     volatile uint16_t *lt = FB16;
     for (int i = 0; i < VIEW_H * 2; i++) {
         lt[i] = (uint16_t)(FB_VIEW_OFS + (i >> 1) * FB_PITCH16);
@@ -144,6 +166,8 @@ void plat_sound_stop_tag(int tag) { snd_stop_tag(tag); }
 void plat_sound_stop_all(void) { snd_stop_all(); }
 int plat_sound_active(int id) { return snd_active(id); }
 void plat_flip(void) { hw_flip(); }
+void plat_flip_request(void) { hw_flip_request(); }
+void plat_flip_wait(void) { hw_flip_wait(); }
 void plat_frame_begin(void) { txt_lines_reset(); }
 void plat_telemetry(uint16_t a, uint16_t b) { MARS_SYS_COMM12 = a; MARS_SYS_COMM14 = b; }
 

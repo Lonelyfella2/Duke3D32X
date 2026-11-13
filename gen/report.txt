@@ -1,0 +1,5 @@
+Duke Nukem 3D 32X data report (registered GRP)
+maps: E1L1 HOLLYWOOD HOLOCAUST (325 sectors/1975 walls/615 sprites, 45 KB LZ4), E1L2 RED LIGHT DISTRICT (278 sectors/1759 walls/759 sprites, 42 KB LZ4), E1L3 DEATH ROW (478 sectors/3050 walls/868 sprites, 64 KB LZ4), E1L4 TOXIC DUMP (557 sectors/3437 walls/912 sprites, 72 KB LZ4), E1L5 THE ABYSS (479 sectors/3198 walls/896 sprites, 70 KB LZ4), E3L2 BANK ROLL (245 sectors/2375 walls/513 sprites, 45 KB LZ4), E3L5 MOVIE SET (209 sectors/1399 walls/467 sprites, 32 KB LZ4), E3L9 STADIUM (15 sectors/114 walls/95 sprites, 3 KB LZ4)
+tiles: 1676 kept, 2206 KB pixels; world textures & sprites at 50% linear resolution (25% of the pixels); HUD/fonts/title at 100%
+sounds: 145 kept, 786 KB 4-bit IMA ADPCM (50% of 8-bit PCM), 22 kHz sources halved to 11 kHz
+blob: 3907 KB
