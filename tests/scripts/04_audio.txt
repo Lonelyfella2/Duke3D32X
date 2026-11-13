@@ -1,0 +1,16 @@
+run 240
+press start 8      # skip the 3D Realms screen
+run 60
+press start 8
+run 60
+press start 8
+run 120
+wav quiet
+press b 6
+run 20
+press b 6
+run 20
+press b 6
+run 40
+wav pistol
+tele

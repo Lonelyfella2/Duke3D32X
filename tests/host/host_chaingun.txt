@@ -1,0 +1,16 @@
+# Give and equip the chaingun, then capture idle and firing frames.
+wait 3
+press start 2
+wait 3
+press start 2
+wait 15
+give
+weapon 3
+wait 3
+shot chaingun_idle
+hold b
+wait 3
+shot chaingun_firing
+release b
+wait 5
+shot chaingun_after

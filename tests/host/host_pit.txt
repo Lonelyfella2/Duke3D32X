@@ -1,0 +1,17 @@
+# E1L2: drop into the yard pit (sector 136); its silent SE 7 hands Duke to
+# the underground pool (sector 135). Expect: no damage, no bounce back to
+# the pit, Duke settles at wading height.
+wait 3
+press start 2
+wait 3
+press right 2
+wait 2
+press start 2
+wait 5
+goto 14016 34048 0
+setz 0
+pstat top
+wait 15
+pstat handed_over
+wait 30
+pstat in_pool

@@ -1,0 +1,9 @@
+# Power-on: the 3D Realms screen (telemetry 0x0800), then the title by
+# itself after about 8.5 s (fade to black, logo animation), waiting for START
+# (telemetry 0x1000)
+run 240
+shot realms
+tele
+run 600
+shot title
+tele

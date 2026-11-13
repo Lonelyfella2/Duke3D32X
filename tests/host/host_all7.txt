@@ -1,0 +1,62 @@
+wait 3
+press start 2
+wait 3
+press start 2
+wait 10
+dump
+shot L1_e1l1
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L2_e1l2
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L3_e1l3
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L4_e1l5
+hold up
+wait 40
+release up
+shot L4_e1l5b
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L4_e3l2
+hold up
+wait 40
+release up
+dump
+shot L4_e3l2b
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L5_e3l5
+hold up
+wait 40
+release up
+dump
+shot L5_e3l5b
+win
+wait 4
+press start 2
+wait 12
+dump
+shot L6_e3l9
+hold up
+wait 60
+release up
+dump
+shot L6_e3l9b

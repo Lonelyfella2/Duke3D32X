@@ -1,0 +1,11 @@
+run 240
+press start 8      # skip the 3D Realms screen
+run 60
+press start 8
+run 60
+shot menu
+tele
+press down 6
+run 30
+shot menu_item2
+tele

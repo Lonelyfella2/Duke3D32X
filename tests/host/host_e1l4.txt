@@ -1,0 +1,50 @@
+# Start Toxic Dump via the level selector. Inspect a wave floor and dive/surface
+# at one of the original map's SE 7 water pairs (83 <-> 27).
+wait 3
+press start 2
+wait 3
+press right 2
+wait 2
+press right 2
+wait 2
+press right 2
+wait 2
+press start 2
+wait 8
+god
+stat start
+scuba_status start
+shotgun_status start
+sect 512
+wait 5
+sect 512
+goto 33920 21888 0
+hold c down
+wait 5
+release c down
+pstat dived
+scuba_status dived
+press b 2
+wait 1
+shotgun_status underwater
+hold a
+wait 30
+release a
+pstat surfaced
+scuba_status surfaced
+shot e1l4_water
+# Subway sector 66: initial end-of-track synchronisation, then actual trip.
+effector 66
+operate 66
+wait 5
+effector 66
+operate 66
+wait 12
+effector 66
+wait 30
+effector 66
+win
+wait 4
+press start 2
+wait 15
+stat next_level

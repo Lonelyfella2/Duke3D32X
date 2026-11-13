@@ -1,0 +1,27 @@
+wait 3
+press start 2
+wait 3
+press start 2
+wait 10
+shot l1
+win
+wait 4
+shot inter1
+press start 2
+wait 12
+shot l2
+hold up
+wait 30
+release up
+press c 2
+wait 30
+shot l2b
+win
+wait 4
+press start 2
+wait 12
+shot l3
+hold up
+wait 30
+release up
+shot l3b

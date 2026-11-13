@@ -1,0 +1,25 @@
+# Start Red Light District normally; don't press use on the elevator.
+wait 3
+press start 2
+wait 3
+press right 2
+wait 3
+press start 2
+wait 8
+god
+# Remove the nearby trooper so its collision doesn't obscure the exit test.
+test_remove_actor 199
+stat start
+sect 201
+wait 100
+stat arrived
+sect 201
+wait 80
+stat stable
+sect 201
+# Center Duke inside the stopped car and walk out, without using the lift.
+goto -11776 6500 512
+hold up
+wait 18
+release up
+stat exit
