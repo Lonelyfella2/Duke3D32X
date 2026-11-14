@@ -15,7 +15,7 @@ extern const uint8_t dk_gamedata[];
 
 static inline void wdt_start7(void)
 {
-    *(volatile uint16_t *)0xFFFFFE80 = 0xA527; /* IT mode, TME=1, CKS=7 (Fs/8192 ~ 356us/tick) */
+    *(volatile uint16_t *)0xFFFFFE80 = 0xA53F; /* IT mode, TME=1, res=11, CKS=7 (Fs/8192 ~ 356us/tick) */
     *(volatile uint16_t *)0xFFFFFE80 = 0x5A00;
 }
 static inline uint8_t wdt_read(void) { return *(volatile uint8_t *)0xFFFFFE81; }
@@ -58,8 +58,9 @@ void secondary(void)
 /* ---- called by the game ---- */
 static int32_t split_x = VIEW_W / 2;
 static rstats_t mirror_seen = { .mirror_wall = -1 };
+static int32_t render_tm;
 
-void plat_render_view(void)
+void plat_render_begin(void)
 {
     rview.frame = (pixel_t *)(0x24000000 + FB_VIEW_OFS * 2);
     rview.pitch = FB_PITCH16;
@@ -75,7 +76,15 @@ void plat_render_view(void)
     MARS_SYS_COMM4 = SCMD_RENDER;
     wdt_start7();
     render_frame_m(0, split_x - 1);
-    int32_t tm = (int32_t)wdt_read();
+    render_tm = (int32_t)wdt_read();
+}
+
+void plat_render_end(void)
+{
+#ifdef MASTER_ONLY
+    return;
+#endif
+    int32_t tm = render_tm;
     while (MARS_SYS_COMM4 != 0) {}
     int32_t ts = SJ->ticks;
     {   /* slave stats via the cache-through mirror */
@@ -84,14 +93,20 @@ void plat_render_view(void)
     }
     int32_t diff = ts - tm;
     if (diff > 2 || diff < -2) {
-        int32_t step = diff >> 2;
+        int32_t step = div32(diff * 48, tm + ts + 12);
         if (step == 0) step = (diff > 0) ? 1 : -1;
-        if (step > 8) step = 8;
-        else if (step < -8) step = -8;
+        if (step > 28) step = 28;
+        else if (step < -28) step = -28;
         split_x += step;
-        if (split_x < 24) split_x = 24;
-        if (split_x > VIEW_W - 24) split_x = VIEW_W - 24;
+        if (split_x < 12) split_x = 12;
+        if (split_x > VIEW_W - 12) split_x = VIEW_W - 12;
     }
+}
+
+void plat_render_view(void)
+{
+    plat_render_begin();
+    plat_render_end();
 }
 
 pixel_t *plat_hud_base(void) { return (pixel_t *)(0x24000000 + FB_HUD_OFS * 2); }
@@ -108,6 +123,49 @@ pixel_t *plat_view_base(void) { return (pixel_t *)(0x24000000 + FB_VIEW_OFS * 2)
 static uint8_t txt_line_on[VIEW_H * 2];
 static int txt_any_used = 2;
 
+uint8_t *plat_text_span(int y0, int y1)
+{
+    if (y0 < 0) y0 = 0;
+    if (y1 > VIEW_H * 2) y1 = VIEW_H * 2;
+    if (y0 >= y1) return (uint8_t *)(0x24000000 + (FB_TXT_OFS + (uint32_t)y0 * FB_PITCH16) * 2);
+    int y = y0;
+    while (y < y1) {
+        if ((y & 1) == 0 && (y + 1) < y1 && !txt_line_on[y] && !txt_line_on[y + 1]) {
+            uint32_t ofs0 = FB_TXT_OFS + (uint32_t)y * FB_PITCH16;
+            uint32_t ofs1 = ofs0 + FB_PITCH16;
+            const volatile uint32_t *src = (const volatile uint32_t *)(0x24000000 + (FB_VIEW_OFS + (y >> 1) * FB_PITCH16) * 2);
+            volatile uint32_t *d0 = (volatile uint32_t *)(0x24000000 + ofs0 * 2);
+            volatile uint32_t *d1 = (volatile uint32_t *)(0x24000000 + ofs1 * 2);
+            for (int i = 0; i < 80; i += 4) {
+                uint32_t a = src[i], b = src[i + 1], c = src[i + 2], d = src[i + 3];
+                d0[i] = a; d0[i + 1] = b; d0[i + 2] = c; d0[i + 3] = d;
+                d1[i] = a; d1[i + 1] = b; d1[i + 2] = c; d1[i + 3] = d;
+            }
+            FB16[y] = (uint16_t)ofs0;
+            FB16[y + 1] = (uint16_t)ofs1;
+            txt_line_on[y] = 1;
+            txt_line_on[y + 1] = 1;
+            txt_any_used = 2;
+            y += 2;
+        } else {
+            if (!txt_line_on[y]) {
+                uint32_t ofs = FB_TXT_OFS + (uint32_t)y * FB_PITCH16;
+                const volatile uint32_t *src = (const volatile uint32_t *)(0x24000000 + (FB_VIEW_OFS + (y >> 1) * FB_PITCH16) * 2);
+                volatile uint32_t *dst = (volatile uint32_t *)(0x24000000 + ofs * 2);
+                for (int i = 0; i < 80; i += 4) {
+                    uint32_t a = src[i], b = src[i + 1], c = src[i + 2], d = src[i + 3];
+                    dst[i] = a; dst[i + 1] = b; dst[i + 2] = c; dst[i + 3] = d;
+                }
+                FB16[y] = (uint16_t)ofs;
+                txt_line_on[y] = 1;
+                txt_any_used = 2;
+            }
+            y++;
+        }
+    }
+    return (uint8_t *)(0x24000000 + (FB_TXT_OFS + (uint32_t)y0 * FB_PITCH16) * 2);
+}
+
 uint8_t *plat_text_line(int sy)
 {
     if ((unsigned)sy >= 224u) return 0;
@@ -117,7 +175,10 @@ uint8_t *plat_text_line(int sy)
     if (!txt_line_on[sy]) {
         const volatile uint32_t *src = (const volatile uint32_t *)(0x24000000 + (FB_VIEW_OFS + (sy >> 1) * FB_PITCH16) * 2);
         volatile uint32_t *dst = (volatile uint32_t *)(0x24000000 + ofs * 2);
-        for (int i = 0; i < 80; i++) dst[i] = src[i];
+        for (int i = 0; i < 80; i += 4) {
+            uint32_t a = src[i], b = src[i + 1], c = src[i + 2], d = src[i + 3];
+            dst[i] = a; dst[i + 1] = b; dst[i + 2] = c; dst[i + 3] = d;
+        }
         FB16[sy] = (uint16_t)ofs;
         txt_line_on[sy] = 1;
         txt_any_used = 2;
@@ -159,6 +220,7 @@ uint32_t plat_read_input(void)
 }
 
 void plat_set_palette(const uint16_t *cram) { hw_set_palette(cram, 0, 256); }
+void plat_set_palette_async(const uint16_t *cram) { hw_set_palette_async(cram, 0, 256); }
 
 /* sound: forwarded to the slave SH-2 mixer */
 void plat_sound_play(int id, int vol, int pan, int32_t pitch, int loop, int tag) { snd_play(id, vol, pan, pitch, loop, tag); }

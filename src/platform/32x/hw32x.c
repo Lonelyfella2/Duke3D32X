@@ -7,19 +7,25 @@ volatile uint32_t mars_vblank_count = 0;
 volatile unsigned mars_pwdt_ovf_count = 0;
 volatile unsigned mars_swdt_ovf_count = 0;
 static volatile uint16_t current_fb = 0;
-static uint16_t pending_cram[256];
+static uint16_t pending_cram[256] __attribute__((aligned(4)));
 static volatile int cram_pending = 0;
 
-void pri_vbi_handler(void) __attribute__((section(".data"), aligned(16)));
+void pri_vbi_handler(void);
 void pri_cmd_handler(void);
 void sec_cmd_handler(void);
 
 void pri_vbi_handler(void)
 {
     mars_vblank_count++;
-    if (cram_pending) {
+    if (cram_pending && (MARS_VDP_FBCTL & MARS_VDP_VBLK)) {
         volatile uint16_t *cram = &MARS_CRAM;
-        for (int i = 0; i < 256; i++) cram[i] = pending_cram[i];
+        const uint16_t *src = pending_cram;
+        for (int i = 0; i < 256; i += 4) {
+            cram[i]     = src[i];
+            cram[i + 1] = src[i + 1];
+            cram[i + 2] = src[i + 2];
+            cram[i + 3] = src[i + 3];
+        }
         cram_pending = 0;
     }
 }
@@ -60,6 +66,7 @@ static volatile int flip_pending = 0;
 void hw_flip_request(void)
 {
     if (flip_pending) hw_flip_wait();
+    while (MARS_VDP_FBCTL & MARS_VDP_FEN) {}
     MARS_VDP_FBCTL = current_fb ^ 1;
     flip_pending = 1;
 }
@@ -89,16 +96,30 @@ void hw_init(void)
     setup_linetable();
     flip_now();
     /* seed a visible palette before the first real one arrives */
+    while (!(MARS_VDP_FBCTL & MARS_VDP_VBLK)) {}
     volatile uint16_t *cram = &MARS_CRAM;
-    for (int i = 0; i < 256; i++) cram[i] = 0x8000 | (uint16_t)((i >> 3) * 0x421);
+    for (int i = 0; i < 256; i++) {
+        uint16_t v = 0x8000 | (uint16_t)((i >> 3) * 0x421);
+        cram[i] = v;
+        pending_cram[i] = v;
+    }
 }
 
 void hw_set_palette(const uint16_t *cram, int first, int count)
 {
+    cram_pending = 0;
     /* CRAM is accessible during VBlank: wait for it and copy directly */
     while (!(MARS_VDP_FBCTL & MARS_VDP_VBLK)) {}
     volatile uint16_t *c = &MARS_CRAM;
     for (int i = 0; i < count; i++) c[first + i] = cram[i];
+}
+
+void hw_set_palette_async(const uint16_t *cram, int first, int count)
+{
+    cram_pending = 0;
+    for (int i = 0; i < count; i++) pending_cram[first + i] = cram[i];
+    __asm__ volatile("" ::: "memory");
+    cram_pending = 1;
 }
 void hw_wait_vblank(void)
 {

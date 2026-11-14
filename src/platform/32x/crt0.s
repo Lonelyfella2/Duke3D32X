@@ -359,10 +359,10 @@ pri_start:
 
         mov.l   _pri_stk,r15
 
-        ! purge cache and turn it off
-        mov.l   _pri_cctl,r0
-        mov     #0x10,r1                /* CP = cache purge, /CE = cache disabled */
-        mov.b   r1,@r0
+        ! purge cache and turn it off (via uncached 0x26xxxxxx trampoline)
+        mov.l   _pri_cc,r0
+        jsr     @r0
+        mov     #0x10,r4                /* CP = cache purge, /CE = cache disabled */
 
         ! clear bss
         mov     #0,r0
@@ -393,13 +393,14 @@ pri_start:
         mov.b   r0,@r1                  /* set FM */
         mov     #0x0A,r0                /* vbi and cmd enabled */
         mov.b   r0,@(1,r1)              /* set int enables */
+
+        ! purge cache and turn it on from uncached space, then enable interrupts
+        mov.l   _pri_cc,r0
+        jsr     @r0
+        mov     #0x11,r4                /* CP = cache purge, CE = cache enabled */
+
         mov     #0x10,r0
         ldc     r0,sr                   /* allow ints */
-
-        ! purge cache, turn it on, and run main()
-        mov.l   _pri_cctl,r0
-        mov     #0x11,r1                /* CP = cache purge, CE = cache enabled */
-        mov.b   r1,@r0
 
         mov.l   _pri_go,r0
         jmp     @r0
@@ -418,8 +419,8 @@ _pri_ok:
         .ascii  "M_OK"
 _pri_adapter:
         .long   0x20004000
-_pri_cctl:
-        .long   0xFFFFFE92
+_pri_cc:
+        .long   _CacheControl
 _pri_go:
         .long   _main
 
@@ -834,13 +835,14 @@ sec_start:
         mov.l   _sec_adapter,r1
         mov     #0x02,r0                /* cmd enabled */
         mov.b   r0,@(1,r1)              /* set int enables */
+
+! purge cache and turn it on from uncached space, then enable interrupts
+        mov.l   _sec_cc,r0
+        jsr     @r0
+        mov     #0x11,r4                /* CP = cache purge, CE = cache enabled */
+
         mov     #0x10,r0
         ldc     r0,sr                   /* allow ints */
-
-! purge cache, turn it on, and run secondary()
-        mov.l   _sec_cctl,r0
-        mov     #0x11,r1                /* CP = cache purge, CE = cache enabled */
-        mov.b   r1,@r0
 
         mov.l   _sec_go,r0
         jmp     @r0
@@ -859,8 +861,8 @@ _sec_ok:
         .ascii  "S_OK"
 _sec_adapter:
         .long   0x20004000
-_sec_cctl:
-        .long   0xFFFFFE92
+_sec_cc:
+        .long   _CacheControl
 _sec_go:
         .long   _secondary
 
@@ -1237,14 +1239,33 @@ _fast_memcpy:
 _cache_flush:
         .long   0x40000000
 
-! Cache control function
+! Cache control function (SH7604 §8.4.3: CCR writes that purge or change CE
+! MUST execute from non-cacheable 0x2xxxxxxx space, with interrupts masked)
 ! On entry: r4 = cache mode => 0x10 = CP, 0x08 = TW, 0x01 = CE
 
         .align  4
         .global _CacheControl
 _CacheControl:
+        stc     sr,r2
+        mov     #0x0F,r0
+        shll2   r0
+        shll2   r0
+        or      r2,r0
+        ldc     r0,sr                   /* mask IRQs across CCR update */
+        mov.l   _cc_uncached,r0
+        jmp     @r0
+        nop
+
+        .align  2
+_cc_uncached:
+        .long   _cc_body + 0x20000000
+_cc_body:
         mov.l   _sh2_cctl,r0
         mov.b   r4,@r0
+        mov.b   @r0,r0                  /* sync CCR write before resuming cached exec */
+        nop
+        nop
+        ldc     r2,sr
         rts
         nop
 

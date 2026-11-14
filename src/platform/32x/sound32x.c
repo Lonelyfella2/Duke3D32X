@@ -129,7 +129,7 @@ static void start_voice(const sndcmd_t *c)
     vo->active = 1;
 }
 
-static void process_cmds(void)
+static __attribute__((noinline)) void process_cmds(void)
 {
     uint32_t t = SH->tail, h = SH->head;
     while (t != h) {
@@ -151,93 +151,124 @@ static void process_cmds(void)
     SH->tail = t;
 }
 
-static inline int32_t decode_next(voice_t *vo)
+static inline int32_t decode_step(const uint8_t *data, uint32_t dec, int32_t *predp, int32_t *idxp)
 {
-    uint32_t i = vo->decoded++;
-    uint32_t b = vo->data[i >> 1];
-    uint32_t code = (i & 1) ? (b & 15) : (b >> 4);
-    int32_t step = ima_step[vo->index];
-    int32_t delta = step >> 3;
-    if (code & 4) delta += step;
-    if (code & 2) delta += step >> 1;
-    if (code & 1) delta += step >> 2;
-    int32_t p = vo->pred + ((code & 8) ? -delta : delta);
-    if (p > 32767) p = 32767;
-    if (p < -32768) p = -32768;
-    vo->pred = p;
-    int32_t ix = vo->index + ima_index[code & 7];
-    vo->index = ix < 0 ? 0 : (ix > 88 ? 88 : ix);
-    return p;
+    uint32_t b = data[dec >> 1];
+    uint32_t code = (dec & 1) ? (b & 15) : (b >> 4);
+    int32_t idx = *idxp;
+    int32_t st = ima_step[idx];
+    int32_t delta = st >> 3;
+    if (code & 4) delta += st;
+    if (code & 2) delta += st >> 1;
+    if (code & 1) delta += st >> 2;
+    int32_t pred = *predp + ((code & 8) ? -delta : delta);
+    if (pred > 32767) pred = 32767;
+    else if (pred < -32768) pred = -32768;
+    idx += ima_index[code & 7];
+    if (idx < 0) idx = 0; else if (idx > 88) idx = 88;
+    *predp = pred; *idxp = idx;
+    return pred;
 }
 
-static void mix_buffer(uint32_t *out)
+static __attribute__((noinline)) void mix_voice_first(voice_t *vo, int32_t *acc)
 {
-    static int32_t accl[MIX_FRAMES], accr[MIX_FRAMES];
-    int f, v, any = 0;
+    int32_t sL = vo->cur * vo->voll, sR = vo->cur * vo->volr;
+    uint32_t frac = vo->pos, step = vo->step;
+    int32_t *p = acc;
+    int n = MIX_FRAMES;
+    do {
+        if (frac >= 0x10000u) {
+            uint32_t dec = vo->decoded, len = vo->len;
+            const uint8_t *data = vo->data;
+            int32_t pred = vo->pred, idx = vo->index;
+            do {
+                frac -= 0x10000u;
+                if (dec >= len) {
+                    if (vo->loop) { dec = 0; pred = vo->start_pred; idx = vo->start_index; }
+                    else {
+                        vo->active = 0;
+                        do { p[0] = 0; p[1] = 0; p += 2; } while (--n);
+                        goto done;
+                    }
+                }
+                pred = decode_step(data, dec++, &pred, &idx);
+            } while (frac >= 0x10000u);
+            vo->decoded = dec; vo->pred = pred; vo->index = idx; vo->cur = pred;
+            sL = pred * vo->voll; sR = pred * vo->volr;
+        }
+        p[0] = sL; p[1] = sR; p += 2;
+        frac += step;
+    } while (--n);
+done:
+    vo->pos = frac;
+}
+
+static __attribute__((noinline)) void mix_voice_add(voice_t *vo, int32_t *acc)
+{
+    int32_t sL = vo->cur * vo->voll, sR = vo->cur * vo->volr;
+    uint32_t frac = vo->pos, step = vo->step;
+    int32_t *p = acc;
+    int n = MIX_FRAMES;
+    do {
+        if (frac >= 0x10000u) {
+            uint32_t dec = vo->decoded, len = vo->len;
+            const uint8_t *data = vo->data;
+            int32_t pred = vo->pred, idx = vo->index;
+            do {
+                frac -= 0x10000u;
+                if (dec >= len) {
+                    if (vo->loop) { dec = 0; pred = vo->start_pred; idx = vo->start_index; }
+                    else { vo->active = 0; goto done; }
+                }
+                pred = decode_step(data, dec++, &pred, &idx);
+            } while (frac >= 0x10000u);
+            vo->decoded = dec; vo->pred = pred; vo->index = idx; vo->cur = pred;
+            sL = pred * vo->voll; sR = pred * vo->volr;
+        }
+        p[0] += sL; p[1] += sR; p += 2;
+        frac += step;
+    } while (--n);
+done:
+    vo->pos = frac;
+}
+
+static __attribute__((noinline)) void mix_buffer(uint32_t *out)
+{
+    static int32_t acc[MIX_FRAMES * 2];
+    int v, any = 0;
     for (v = 0; v < NUM_VOICES; v++) {
         voice_t *vo = &voices[v];
         if (!vo->active) continue;
-        int32_t vl = vo->voll, vr = vo->volr, cur = vo->cur;
-        int32_t sL = cur * vl, sR = cur * vr;
-        uint32_t frac = vo->pos, step = vo->step, len = vo->len;
-        if (!any) {
-            for (f = 0; f < MIX_FRAMES; f++) {
-                if (frac >= 0x10000u) {
-                    do {
-                        frac -= 0x10000u;
-                        if (vo->decoded >= len) {
-                            if (vo->loop) { vo->decoded = 0; vo->pred = vo->start_pred; vo->index = vo->start_index; }
-                            else {
-                                vo->active = 0;
-                                for (; f < MIX_FRAMES; f++) { accl[f] = 0; accr[f] = 0; }
-                                goto voice_done;
-                            }
-                        }
-                        cur = decode_next(vo);
-                    } while (frac >= 0x10000u);
-                    sL = cur * vl; sR = cur * vr;
-                }
-                accl[f] = sL;
-                accr[f] = sR;
-                frac += step;
-            }
-        } else {
-            for (f = 0; f < MIX_FRAMES; f++) {
-                if (frac >= 0x10000u) {
-                    do {
-                        frac -= 0x10000u;
-                        if (vo->decoded >= len) {
-                            if (vo->loop) { vo->decoded = 0; vo->pred = vo->start_pred; vo->index = vo->start_index; }
-                            else { vo->active = 0; goto voice_done; }
-                        }
-                        cur = decode_next(vo);
-                    } while (frac >= 0x10000u);
-                    sL = cur * vl; sR = cur * vr;
-                }
-                accl[f] += sL;
-                accr[f] += sR;
-                frac += step;
-            }
-        }
-voice_done:
-        vo->pos = frac; vo->cur = cur;
-        any = 1;
+        if (!any) { mix_voice_first(vo, acc); any = 1; }
+        else mix_voice_add(vo, acc);
     }
     if (!any) {
         uint32_t sil = ((uint32_t)center << 16) | (uint16_t)center;
-        for (f = 0; f < MIX_FRAMES; f++) out[f] = sil;
+        volatile uint32_t *vout = out;
+        int n = MIX_FRAMES;
+        do { *vout++ = sil; } while (--n);
     } else {
-        for (f = 0; f < MIX_FRAMES; f++) {
-            int32_t l = accl[f] >> 15, r = accr[f] >> 15;          /* full-scale voice ~ +-256 */
+        const int32_t *p = acc;
+        int32_t ctr = center;
+        volatile uint32_t *vout = out;
+        int n = MIX_FRAMES;
+        do {
+            int32_t l = p[0] >> 15, r = p[1] >> 15;
+            p += 2;
             if (l > 384) l = 384 + ((l - 384) >> 2); else if (l < -384) l = -384 + ((l + 384) >> 2);
             if (r > 384) r = 384 + ((r - 384) >> 2); else if (r < -384) r = -384 + ((r + 384) >> 2);
             if (l > 500) l = 500; else if (l < -500) l = -500;
             if (r > 500) r = 500; else if (r < -500) r = -500;
-            out[f] = ((uint32_t)(center + l) << 16) | (uint32_t)(uint16_t)(center + r);
-        }
+            *vout++ = ((uint32_t)(ctr + l) << 16) | (uint32_t)(uint16_t)(ctr + r);
+        } while (--n);
     }
     for (v = 0; v < NUM_VOICES; v++) SH->playing[v] = voices[v].active ? voices[v].id : -1;
     SH->mixed++;
+}
+
+static inline uint32_t *mixbuf_uncached(int idx)
+{
+    return (uint32_t *)((uintptr_t)mixbuf[idx] | 0x20000000u);
 }
 
 static void dma_start(const uint32_t *buf)
@@ -257,7 +288,7 @@ void sec_dma1_handler(void)
     int fill = (playbuf + NUM_BUFS - 1) % NUM_BUFS;   /* the buffer that just finished */
     playbuf = next;
     process_cmds();
-    mix_buffer(mixbuf[fill]);
+    mix_buffer(mixbuf_uncached(fill));
 }
 
 void snd_slave_init(void)
@@ -287,8 +318,11 @@ void snd_slave_init(void)
             MARS_PWM_MONO = (uint16_t)s;
         }
     }
-    for (int b = 0; b < NUM_BUFS; b++)
-        for (int f = 0; f < MIX_FRAMES; f++) mixbuf[b][f] = ((uint32_t)center << 16) | (uint16_t)center;
+    for (int b = 0; b < NUM_BUFS; b++) {
+        volatile uint32_t *dst = mixbuf_uncached(b);
+        uint32_t sil = ((uint32_t)center << 16) | (uint16_t)center;
+        for (int f = 0; f < MIX_FRAMES; f++) dst[f] = sil;
+    }
     playbuf = 0;
     dma_start(mixbuf[0]);
 }

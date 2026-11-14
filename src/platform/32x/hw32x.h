@@ -29,6 +29,7 @@
 
 void hw_init(void);
 void hw_set_palette(const uint16_t *cram, int first, int count);
+void hw_set_palette_async(const uint16_t *cram, int first, int count);
 void hw_wait_vblank(void);
 void hw_flip(void);                 /* show the drawn buffer, wait until swapped */
 void hw_flip_request(void);
