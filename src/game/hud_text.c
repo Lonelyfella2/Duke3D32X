@@ -193,20 +193,80 @@ static int bigfont_width(const bigfont_t *f, const char *s)
 static void bigfont_draw(const bigfont_t *f, int x, int y, const char *s, const uint16_t *cram, int tint)
 {
     const uint8_t *map = font_map(f, cram, tint);
-    for (; *s; s++) {
-        int g = bigfont_index((uint8_t)*s);
+    int x0 = 320, x1 = 0, cx = x;
+    for (const char *p = s; *p; p++) {
+        int g = bigfont_index((uint8_t)*p);
         if (g < 0) continue;
-        int gw = f->glyph[g].w, bw = (gw + 1) >> 1;
-        const uint8_t *src = f->px + f->glyph[g].off;
-        for (int r = 0; gw && r < f->h; r++, src += bw) {
-            uint8_t *line = plat_text_line(y + r);
-            if (!line) continue;
-            for (int c = 0; c < gw; c++) {
-                int v = (c & 1) ? (src[c >> 1] >> 4) : (src[c >> 1] & 15);
-                if (v && (unsigned)(x + c) < 320u) line[x + c] = map[v];
+        int gw = f->glyph[g].w;
+        if (gw > 0) {
+            if (cx < x0) x0 = cx;
+            if (cx + gw > x1) x1 = cx + gw;
+        }
+        cx += f->glyph[g].adv;
+    }
+    if (x0 < 0) x0 = 0;
+    if (x1 > 320) x1 = 320;
+    if (x0 >= x1) return;
+    int r0 = y < 0 ? -y : 0;
+    int r1 = (y + f->h > 224) ? (224 - y) : f->h;
+    if (r0 >= r1) return;
+    int w0 = x0 >> 2, w1 = (x1 + 3) >> 2, nw = w1 - w0, xbase = w0 << 2;
+    int nr = r1 - r0, rowbytes = nw << 2;
+    uint32_t buf[15 * 80];
+    uint8_t *rows[15];
+    if (nr > 15) nr = 15;
+    if (y + r0 + nr <= 192) {
+        uint8_t *base = plat_text_span(y + r0, y + r0 + nr);
+        for (int r = 0; r < nr; r++) rows[r] = base + r * 320;
+    } else {
+        for (int r = 0; r < nr; r++) rows[r] = plat_text_line(y + r0 + r);
+    }
+    uint8_t *rb = (uint8_t *)buf;
+    for (int r = 0; r < nr; r++) {
+        uint8_t *line = rows[r];
+        if (!line) continue;
+        volatile uint32_t *l32 = (volatile uint32_t *)line + w0;
+        uint32_t *dst32 = buf + r * nw;
+        for (int k = 0; k < nw; k++) dst32[k] = l32[k];
+    }
+    cx = x;
+    for (const char *p = s; *p; p++) {
+        int g = bigfont_index((uint8_t)*p);
+        if (g < 0) continue;
+        int gw = f->glyph[g].w, adv = f->glyph[g].adv;
+        if (gw > 0 && cx + gw > x0 && cx < x1) {
+            int bw = (gw + 1) >> 1;
+            const uint8_t *src = f->px + f->glyph[g].off + r0 * bw;
+            int c0 = cx < 0 ? -cx : 0;
+            int c1 = cx + gw > 320 ? 320 - cx : gw;
+            uint8_t *dr = rb + (cx - xbase);
+            for (int r = 0; r < nr; r++, src += bw, dr += rowbytes) {
+                if (!rows[r]) continue;
+                for (int c = c0; c < c1; ) {
+                    if ((c & 1) == 0 && c + 1 < c1) {
+                        uint8_t b = src[c >> 1];
+                        if (b) {
+                            uint8_t lo = b & 15, hi = b >> 4;
+                            if (lo) dr[c] = map[lo];
+                            if (hi) dr[c + 1] = map[hi];
+                        }
+                        c += 2;
+                    } else {
+                        int v = (c & 1) ? (src[c >> 1] >> 4) : (src[c >> 1] & 15);
+                        if (v) dr[c] = map[v];
+                        c++;
+                    }
+                }
             }
         }
-        x += f->glyph[g].adv;
+        cx += adv;
+    }
+    for (int r = 0; r < nr; r++) {
+        uint8_t *line = rows[r];
+        if (!line) continue;
+        volatile uint32_t *l32 = (volatile uint32_t *)line + w0;
+        const uint32_t *src32 = buf + r * nw;
+        for (int k = 0; k < nw; k++) l32[k] = src32[k];
     }
 }
 
@@ -229,20 +289,39 @@ void tfont_center(int y, const char *s, int tint) { tfont_draw((320 - tfont_widt
 /* centred, wrapped once at a space when wider than maxw; returns the rows */
 int tfont_center_wrap(int y, const char *s, int tint, int maxw)
 {
-    if (tfont_width(s) <= maxw) { tfont_center(y, s, tint); return 1; }
-    int n = (int)strlen(s), best = -1;
-    char a[64], b[64];
-    for (int i = 1; i < n && i < 63; i++) {
-        if (s[i] != ' ') continue;
-        memcpy(a, s, (size_t)i); a[i] = 0;
-        if (tfont_width(a) <= maxw) best = i;
+    static const char *cw_s;
+    static int cw_maxw;
+    static char cw_a[64], cw_b[64];
+    static int16_t cw_x1, cw_x2, cw_n;
+    if (cw_s != s || cw_maxw != maxw) {
+        cw_s = s; cw_maxw = maxw;
+        int w = tfont_width(s);
+        if (w <= maxw) {
+            cw_n = 1;
+            cw_x1 = (int16_t)((320 - w) >> 1);
+        } else {
+            int n = (int)strlen(s), best = -1;
+            for (int i = 1; i < n && i < 63; i++) {
+                if (s[i] != ' ') continue;
+                memcpy(cw_a, s, (size_t)i); cw_a[i] = 0;
+                if (tfont_width(cw_a) <= maxw) best = i;
+            }
+            if (best < 0) {
+                cw_n = 1;
+                cw_x1 = (int16_t)((320 - w) >> 1);
+            } else {
+                memcpy(cw_a, s, (size_t)best); cw_a[best] = 0;
+                int m = n - best - 1; if (m > 63) m = 63;
+                memcpy(cw_b, s + best + 1, (size_t)m); cw_b[m] = 0;
+                cw_n = 2;
+                cw_x1 = (int16_t)((320 - tfont_width(cw_a)) >> 1);
+                cw_x2 = (int16_t)((320 - tfont_width(cw_b)) >> 1);
+            }
+        }
     }
-    if (best < 0) { tfont_center(y, s, tint); return 1; }
-    memcpy(a, s, (size_t)best); a[best] = 0;
-    int m = n - best - 1; if (m > 63) m = 63;
-    memcpy(b, s + best + 1, (size_t)m); b[m] = 0;
-    tfont_center(y, a, tint);
-    tfont_center(y + TFONT_LINE, b, tint);
+    if (cw_n == 1) { tfont_draw(cw_x1, y, s, tint); return 1; }
+    tfont_draw(cw_x1, y, cw_a, tint);
+    tfont_draw(cw_x2, y + TFONT_LINE, cw_b, tint);
     return 2;
 }
 

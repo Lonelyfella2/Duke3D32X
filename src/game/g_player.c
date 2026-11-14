@@ -417,8 +417,7 @@ void player_process(void)
     if (pl.transporter_hold < 0) pl.transporter_hold++;
 
     getzrange(pl.posx, pl.posy, pl.posz, (int16_t)psect, &cz, &hz, &fz, &lz, 163, CLIPMASK0);
-    pl.truefz = getflorzofslope((int16_t)psect, pl.posx, pl.posy);
-    pl.truecz = getceilzofslope((int16_t)psect, pl.posx, pl.posy);
+    getzsofslope((int16_t)psect, pl.posx, pl.posy, &pl.truecz, &pl.truefz);
     int32_t truefdist = klabs(pl.posz - pl.truefz);
 
     i = 40;          /* eye height above floor, in z>>8 units */
@@ -591,7 +590,7 @@ void player_process(void)
 
     /* hazards */
     int fpic = sector[pl.cursectnum].floorpicnum;
-    if (pl.level_time > 90 && pl.on_ground && truefdist <= PHEIGHT + (16 << 8) &&
+    if (!pl.cheat_god && pl.level_time > 90 && pl.on_ground && truefdist <= PHEIGHT + (16 << 8) &&
         (fpic == FLOORSLIME || fpic == HURTRAIL || fpic == FLOORPLASMA)) {
         if (pl.inv[INV_BOOTS] > 0) { if ((pl.level_time & 3) == 0) pl.inv[INV_BOOTS]--; }
         else if (rnd(32)) { player_hurt(1 + (krand() & 3), -1); if (fpic == HURTRAIL) globalsound(SHORT_CIRCUIT); }

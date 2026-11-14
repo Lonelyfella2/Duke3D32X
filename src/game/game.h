@@ -9,12 +9,15 @@
 
 /* ---- platform services ---- */
 void      plat_render_view(void);           /* renders rview into the view area */
+void      plat_render_begin(void);
+void      plat_render_end(void);
 pixel_t  *plat_hud_base(void);              /* 320x32 native-res HUD (pitch 160 words) */
 pixel_t  *plat_view_base(void);
 uint32_t  plat_ticks(void);                 /* 60 Hz (50 Hz PAL) vblank counter */
 int       plat_pal(void);
 uint32_t  plat_read_input(void);            /* pad bits, SEGA_CTRL layout */
 void      plat_set_palette(const uint16_t *cram);
+void      plat_set_palette_async(const uint16_t *cram);
 void      plat_flip(void);
 void      plat_flip_request(void);
 void      plat_flip_wait(void);
@@ -50,6 +53,7 @@ extern int game_skip_intro;                 /* 1 = no 3D Realms screen / logo an
  * line the first time they are requested in a frame (the copy holds the
  * view as drawn so far), so 2D text on top is full resolution. */
 uint8_t  *plat_text_line(int sy);
+uint8_t  *plat_text_span(int y0, int y1);
 /* the same line without the copy of the view row - for pictures that cover
  * the whole line.  Lines 0..191 are consecutive in memory, as are 192..223. */
 uint8_t  *plat_screen_line(int sy);

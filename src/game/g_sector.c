@@ -116,11 +116,16 @@ static void ms(int i)
     s->y += (s->xvel * (sintable[s->ang & 2047])) >> 14;
     int j = T2(i);
     int k = T3(i);
+    int32_t dacos = sintable[(k + 2560) & 2047];
+    int32_t dasin = sintable[(k + 2048) & 2047];
+    int32_t sx = s->x, sy = s->y;
     int startwall = sector[s->sectnum].wallptr, endwall = startwall + sector[s->sectnum].wallnum;
     for (int x = startwall; x < endwall && j < MAXMSPOINTS; x++, j++) {
-        int32_t tx, ty;
-        rotatepoint(0, 0, msx[j], msy[j], (int16_t)(k & 2047), &tx, &ty);
-        dragpoint((int16_t)x, s->x + tx, s->y + ty);
+        int32_t mx = msx[j], my = msy[j];
+        int32_t nx = sx + ((mx * dacos - my * dasin) >> 14);
+        int32_t ny = sy + ((my * dacos + mx * dasin) >> 14);
+        if (wall[x].x != nx || wall[x].y != ny)
+            dragpoint((int16_t)x, nx, ny);
     }
 }
 
@@ -958,25 +963,35 @@ void moveeffectors(void)
             q = sc->extra >> 3;
             if (T1(j) == 0) break;
             l = (sprite[j].ang > 1024) ? -1 : 1;
-            if (T4(i) == 0) T4(i) = ksqrt((uint32_t)((s->x - sprite[j].x) * (s->x - sprite[j].x) +
-                                                    (s->y - sprite[j].y) * (s->y - sprite[j].y)));
             s->x = sprite[j].x; s->y = sprite[j].y;
             s->ang += (int16_t)(l * q);
             T3(i) += l * q;
-            if (sc->floorstat & 64 || 1) {
+            /* ACTORS.C carries the player and the sprites standing in the
+             * sector only when the sector flag says so: "if( l && (sc->floorstat&64) )".
+             * floorstat bit 64 is the map editor's "move with sector".  A
+             * rotator without it is pure scenery, so things inside it stay
+             * where they are.  E1L1's arcade lights are rotating sectors with
+             * floorstat 8 (the flag clear) but the light box's floor is at the
+             * room's floor height, so Duke and the actors walking under them
+             * end up inside the sector: the old unconditional `|| 1` here then
+             * span them around the SE 1 pivot in circles. */
+            if (l && (sc->floorstat & 64)) {
                 if (pl.cursectnum == s->sectnum && pl.on_ground) {
                     int32_t m, xx;
                     pl.ang = (int16_t)((pl.ang + l * q) & 2047);
                     rotatepoint(sprite[j].x, sprite[j].y, pl.posx, pl.posy, (int16_t)(q * l), &m, &xx);
                     pl.posx = m; pl.posy = xx;
+                    if (sprite[pl.i].extra <= 0) { sprite[pl.i].x = m; sprite[pl.i].y = xx; }
                 }
-                for (int p = headspritesect[s->sectnum]; p >= 0; p = nextspritesect[p])
-                    if (sprite[p].statnum != STAT_EFFECTOR && sprite[p].statnum != STAT_PROJECTILE && p != pl.i) {
-                        int32_t m, xx;
-                        sprite[p].ang = (int16_t)((sprite[p].ang + l * q) & 2047);
-                        rotatepoint(sprite[j].x, sprite[j].y, sprite[p].x, sprite[p].y, (int16_t)(q * l), &m, &xx);
-                        sprite[p].x = m; sprite[p].y = xx;
-                    }
+                for (int p = headspritesect[s->sectnum]; p >= 0; p = nextspritesect[p]) {
+                    spritetype *psp = &sprite[p];
+                    if (psp->statnum == STAT_EFFECTOR || psp->statnum == STAT_PROJECTILE) continue;
+                    if (psp->picnum == LASERLINE || psp->picnum == APLAYER) continue;
+                    int32_t m, xx;
+                    psp->ang = (int16_t)((psp->ang + l * q) & 2047);
+                    rotatepoint(sprite[j].x, sprite[j].y, psp->x, psp->y, (int16_t)(q * l), &m, &xx);
+                    psp->x = m; psp->y = xx;
+                }
             }
             s->xvel = 0;
             ms(i);
@@ -1011,14 +1026,8 @@ void moveeffectors(void)
                     if (wallx[sw + k].hitag != 1) wall[sw + k].shade = (int8_t)x;
             }
             break;
-        case 8: case 9: {  /* door lights follow the door's opening */
-            int32_t span = klabs(sc->floorz - s->z);
-            int32_t open = klabs(sc->ceilingz - s->z);
-            if (span == 0) span = 1;
-            x = T1(i) + (int32_t)(((int64_t)(T3(i) - T1(i)) * (span - min(open, span))) / span);
-            (void)x;
+        case 8: case 9:    /* door lights (no shade writes needed here) */
             break;
-        }
         case 10: {         /* ACTORS.C: timed doors close after Duke leaves */
             int lt = sc->lotag & 0xff;
             if (lt == 27 || (sc->floorz > sc->ceilingz && lt != 23) || sc->lotag == (int16_t)32791) {
@@ -1115,26 +1124,34 @@ void moveeffectors(void)
             break;
         case 24: case 34:  /* conveyor floors (34 is the water-current variant) */
             if (T5(i) == 0) {
+                sc->floorxpanning += (uint8_t)(s->yvel >> 7);
+                int has_pl = (pl.cursectnum == s->sectnum && pl.on_ground &&
+                              klabs(pl.posz - pl.truefz) < PHEIGHT + (9 << 8));
+                int has_sp = (headspritesect[s->sectnum] != i || nextspritesect[i] >= 0);
+                if (!has_pl && !has_sp) break;
                 x = (s->yvel * sintable[(s->ang + 512) & 2047]) >> 18;
                 l = (s->yvel * sintable[s->ang & 2047]) >> 18;
-                sc->floorxpanning += (uint8_t)(s->yvel >> 7);
                 /* Original currents feed the next player input as friction;
                  * use velocity rather than teleporting through solid walls. */
-                if (pl.cursectnum == s->sectnum && pl.on_ground &&
-                    klabs(pl.posz - pl.truefz) < PHEIGHT + (9 << 8)) {
+                if (has_pl) {
                     pl.posxv += x * 2048; pl.posyv += l * 2048;
                 }
-                int nextj;
-                for (j = headspritesect[s->sectnum]; j >= 0; j = nextj) {
-                    nextj = nextspritesect[j];
-                    spritetype *p = &sprite[j];
-                    if (j == pl.i || p->zvel < 0 ||
-                        (p->statnum != STAT_ITEM && p->statnum != STAT_DEAD &&
-                         p->statnum != STAT_ACTOR && p->statnum != STAT_STANDABLE)) continue;
-                    if (p->statnum == STAT_STANDABLE && (p->picnum == TOUCHPLATE || p->picnum == MASTERSWITCH)) continue;
-                    if (p->z <= getflorzofslope(s->sectnum, p->x, p->y) - (16 << 8)) continue;
-                    p->x += x >> 2; p->y += l >> 2;
-                    setsprite((int16_t)j, p->x, p->y, p->z);
+                int32_t dx4 = x >> 2, dy4 = l >> 2;
+                if (has_sp && (dx4 || dy4)) {
+                    int sloped = (sc->floorstat & 2) != 0;
+                    int nextj;
+                    for (j = headspritesect[s->sectnum]; j >= 0; j = nextj) {
+                        nextj = nextspritesect[j];
+                        spritetype *p = &sprite[j];
+                        if (j == pl.i || p->zvel < 0 ||
+                            (p->statnum != STAT_ITEM && p->statnum != STAT_DEAD &&
+                             p->statnum != STAT_ACTOR && p->statnum != STAT_STANDABLE)) continue;
+                        if (p->statnum == STAT_STANDABLE && (p->picnum == TOUCHPLATE || p->picnum == MASTERSWITCH)) continue;
+                        int32_t fz = sloped ? getflorzofslope(s->sectnum, p->x, p->y) : sc->floorz;
+                        if (p->z <= fz - (16 << 8)) continue;
+                        p->x += dx4; p->y += dy4;
+                        setsprite((int16_t)j, p->x, p->y, p->z);
+                    }
                 }
             }
             break;
@@ -1296,11 +1313,11 @@ void moveeffectors(void)
  *    from water. */
 void transporter_check(void)
 {
-    for (int i = headspritestat[STAT_TRANSPORT]; i >= 0; i = nextspritestat[i]) {
+    for (int i = headspritesect[pl.cursectnum]; i >= 0; i = nextspritesect[i]) {
         spritetype *s = &sprite[i];
+        if (s->statnum != STAT_TRANSPORT) continue;
         int ow = s->owner;
-        if (T1(i) > 0) T1(i)--;
-        if (ow == i || ow < 0 || s->sectnum != pl.cursectnum) continue;
+        if (ow == i || ow < 0) continue;
         spritetype *d = &sprite[ow];
         int sectlotag = sector[s->sectnum].lotag;
         int onfloorz = T5(i);

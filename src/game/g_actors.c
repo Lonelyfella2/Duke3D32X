@@ -584,7 +584,7 @@ static void projectile_impact(int i, int hitsect, int hitwall, int hitspr, int32
         break;
     case SHRINKSPARK: case GROWSPARK: case FREEZEBLAST:
         spawn_spark(hitsect >= 0 ? hitsect : s->sectnum, hx, hy, hz, s->ang);
-        if (hitspr == pl.i && pic == SHRINKSPARK) pl.shrunk = 30 * 6;
+        if (hitspr == pl.i && pic == SHRINKSPARK && !pl.cheat_god) pl.shrunk = 30 * 6;
         break;
     }
     deletesprite((int16_t)i);
@@ -772,7 +772,10 @@ static void move_enemy(int i)
         dist + (klabs(pl.posz - s->z + (28 << 8)) >> 4) < 1280)
         player_hurt(2000, i);
     /* sleep when far (Duke: timetosleep) */
-    if (dist > 24000 && A_STATE(i) == AI_IDLE) return;
+    if (dist > 24000) {
+        if (A_STATE(i) == AI_IDLE) return;
+        if (A_STATE(i) == AI_CHASE && !boss_base(e->base)) { A_STATE(i) = AI_IDLE; return; }
+    }
 
     const con_act_t *a = cur_action(i);
     if (++A_TICK(i) * 4 >= (a->delay ? a->delay : 4)) {
@@ -801,10 +804,9 @@ static void move_enemy(int i)
         if (s->z < (act[i].floorz8 << 8)) s->z = min(s->z + 512, act[i].floorz8 << 8);
         return;
     }
-    int canseep = 0;
-    if ((gametic + i) % 6 == 0 || A_STATE(i) != AI_IDLE)
-        canseep = (dist < 18000) && cansee(s->x, s->y, s->z - (32 << 8), s->sectnum, pl.posx, pl.posy, pl.posz, pl.cursectnum);
     if (A_STATE(i) == AI_IDLE) {
+        int canseep = (dist < 18000) && ((gametic + i) % 6 == 0) &&
+            cansee(s->x, s->y, s->z - (32 << 8), s->sectnum, pl.posx, pl.posy, pl.posz, pl.cursectnum);
         if (canseep && !pl.dead_flag) {
             A_STATE(i) = AI_CHASE; A_FRAME(i) = 0;
             if (e->s_recog) spritesound(e->s_recog, i);
@@ -816,11 +818,14 @@ static void move_enemy(int i)
     }
     if (pl.dead_flag) { A_STATE(i) = AI_IDLE; return; }
     int ang = getangle(pl.posx - s->x, pl.posy - s->y);
+    int have_z = 0;
+    int32_t cz = 0, fz = 0;
     if (A_STATE(i) == AI_CHASE) {
         /* turn toward the player */
         int da = ((ang - s->ang + 1024) & 2047) - 1024;
         s->ang = (int16_t)((s->ang + (da >> 2)) & 2047);
-        if (--A_TIMER(i) <= 0 && canseep) {
+        if (--A_TIMER(i) <= 0 && dist < 18000 &&
+            cansee(s->x, s->y, s->z - (32 << 8), s->sectnum, pl.posx, pl.posy, pl.posz, pl.cursectnum)) {
             A_TIMER(i) = (int16_t)(e->att_delay + (krand() & 31));
             if (e->attack != ATK_NONE && (dist < 12000 || e->attack == ATK_KAMIKAZE)) {
                 A_STATE(i) = AI_ATTACK; A_FRAME(i) = 0; A_TICK(i) = 0;
@@ -836,18 +841,22 @@ static void move_enemy(int i)
             int r = clipmove(&x, &y, &z, &sect, (v * sintable[(s->ang + 512) & 2047]) >> 1,
                              (v * sintable[s->ang & 2047]) >> 1, s->clipdist << 2, 4 << 8, 24 << 8, CLIPMASK0);
             if (sect >= 0) {
-                int32_t cz, fz; getzsofslope(sect, x, y, &cz, &fz);
+                getzsofslope(sect, x, y, &cz, &fz);
                 if (e->flyer || fz - s->z < (24 << 8)) {
                     s->x = x; s->y = y;
                     if (sect != s->sectnum) changespritesect((int16_t)i, sect);
+                    have_z = 1;
                 } else r = 1;
+            } else {
+                s->ang = (int16_t)((s->ang + 768) & 2047);
+                r = 0;
             }
             if (r) s->ang = (int16_t)((s->ang + 512 - (krand() & 1023)) & 2047);
         }
     }
     if (e->base == ROTATEGUN) return; /* ceiling turret stays fixed in place */
     /* vertical: walkers follow the floor, flyers hover toward player height */
-    int32_t cz, fz; getzsofslope(s->sectnum, s->x, s->y, &cz, &fz);
+    if (!have_z) getzsofslope(s->sectnum, s->x, s->y, &cz, &fz);
     act[i].floorz8 = (int16_t)(fz >> 8);
     if (e->flyer) {
         int32_t goal = pl.posz - (8 << 8);
@@ -1072,9 +1081,11 @@ static void move_crane(int i)
 
 static void move_standables(void)
 {
+    int16_t boom[24]; int nboom = 0;
     for (int i = headspritestat[STAT_STANDABLE]; i >= 0; i = nextspritestat[i]) {
         spritetype *s = &sprite[i];
-        if ((s->picnum == QUEBALL || s->picnum == STRIPEBALL) && s->xvel > 0) {
+        int pic = s->picnum;
+        if ((pic == QUEBALL || pic == STRIPEBALL) && s->xvel > 0) {
             int32_t x = s->x, y = s->y, z = s->z - 256; int16_t sect = s->sectnum;
             int r = clipmove(&x, &y, &z, &sect, (s->xvel * sintable[(s->ang + 512) & 2047]) >> 1,
                              (s->xvel * sintable[s->ang & 2047]) >> 1, 24, 4 << 8, 4 << 8, CLIPMASK1);
@@ -1082,8 +1093,7 @@ static void move_standables(void)
             if (sect >= 0) { s->x = x; s->y = y; if (sect != s->sectnum) changespritesect((int16_t)i, sect); }
             s->xvel -= (s->xvel >> 4) + 1;
             if (s->xvel < 0) s->xvel = 0;
-        }
-        if (s->picnum == MASTERSWITCH && s->yvel == 1) {   /* ACTORS.C: delayed trigger */
+        } else if (pic == MASTERSWITCH && s->yvel == 1) {   /* ACTORS.C: delayed trigger */
             if (--s->hitag <= 0) {
                 int sect = s->sectnum;
                 operatesectors(sect, i);
@@ -1099,54 +1109,43 @@ static void move_standables(void)
                 }
                 s->yvel = 2;          /* KILLIT: spent (never re-armed) */
             }
-        }
-    }
-    for (int i = headspritestat[STAT_STANDABLE]; i >= 0; i = nextspritestat[i])
-        if (sprite[i].picnum >= CRANE && sprite[i].picnum <= CRANE + 2) move_crane(i);
-    /* touchplates (ACTORS.C): stepping on one fires master switches and
-     * activators with its lotag; hitag > 0 = number of uses */
-    for (int i = headspritestat[STAT_STANDABLE]; i >= 0; i = nextspritestat[i]) {
-        spritetype *s = &sprite[i];
-        if (s->picnum != TOUCHPLATE) continue;
-        actor_t *t = &act[i];
-        int sect = s->sectnum;
-        if (t->t[1] == 1 && s->hitag >= 0) {           /* move the plate's floor */
-            int32_t x = sector[sect].floorz, e = sector[sect].extra;
-            if (t->t3 == 1) {
-                if (x >= t->t[2]) t->t[1] = 0;
-                else { sector[sect].floorz += e; if (pl.cursectnum == sect) pl.posz += e; }
-            } else {
-                if (x <= s->z) { sector[sect].floorz = s->z; t->t[1] = 0; }
-                else { sector[sect].floorz -= e; if (pl.cursectnum == sect) pl.posz -= e; }
-            }
-            continue;
-        }
-        if (t->extra2 == 1) continue;                  /* used up */
-        if (pl.cursectnum == sect && (pl.on_ground || s->ang == 512)) {
-            if (t->t[0] == 0) {
-                t->t[0] = 1; t->t[1] = 1; t->t3 = (int16_t)!t->t3;
-                operatemasterswitches(s->lotag);
-                operateactivators(s->lotag, 0);
-                if (s->hitag > 0 && --s->hitag == 0) t->extra2 = 1;
-            }
-        } else t->t[0] = 0;
-        if (t->t[1] == 1)
-            for (int j = headspritestat[STAT_STANDABLE]; j >= 0; j = nextspritestat[j])
-                if (j != i && sprite[j].picnum == TOUCHPLATE && sprite[j].lotag == s->lotag) {
-                    act[j].t[1] = 1; act[j].t3 = t->t3;
+        } else if (pic >= CRANE && pic <= CRANE + 2) {
+            move_crane(i);
+        } else if (pic == TOUCHPLATE) {
+            actor_t *t = &act[i];
+            int sect = s->sectnum;
+            if (t->t[1] == 1 && s->hitag >= 0) {           /* move the plate's floor */
+                int32_t x = sector[sect].floorz, e = sector[sect].extra;
+                if (t->t3 == 1) {
+                    if (x >= t->t[2]) t->t[1] = 0;
+                    else { sector[sect].floorz += e; if (pl.cursectnum == sect) pl.posz += e; }
+                } else {
+                    if (x <= s->z) { sector[sect].floorz = s->z; t->t[1] = 0; }
+                    else { sector[sect].floorz -= e; if (pl.cursectnum == sect) pl.posz -= e; }
                 }
-    }
-    /* SEENINE / OOZFILTER charge countdowns; detonations go through a list
-     * because a blast can delete other sprites on the stat list */
-    int16_t boom[24]; int nboom = 0;
-    for (int i = headspritestat[STAT_STANDABLE]; i >= 0; i = nextspritestat[i]) {
-        spritetype *s = &sprite[i];
-        if (s->picnum != SEENINE && s->picnum != OOZFILTER) continue;
-        if (s->shade == -31) seenine_arm(i, 0);
-        else if (s->shade == -32) {
-            if (s->lotag > 0) { s->lotag -= 3; if (s->lotag <= 0) s->lotag = -99; }
-            else s->shade = -33;
-        } else if (s->shade == -33 && nboom < 24) boom[nboom++] = (int16_t)i;
+                continue;
+            }
+            if (t->extra2 == 1) continue;                  /* used up */
+            if (pl.cursectnum == sect && (pl.on_ground || s->ang == 512)) {
+                if (t->t[0] == 0) {
+                    t->t[0] = 1; t->t[1] = 1; t->t3 = (int16_t)!t->t3;
+                    operatemasterswitches(s->lotag);
+                    operateactivators(s->lotag, 0);
+                    if (s->hitag > 0 && --s->hitag == 0) t->extra2 = 1;
+                }
+            } else t->t[0] = 0;
+            if (t->t[1] == 1)
+                for (int j = headspritestat[STAT_STANDABLE]; j >= 0; j = nextspritestat[j])
+                    if (j != i && sprite[j].picnum == TOUCHPLATE && sprite[j].lotag == s->lotag) {
+                        act[j].t[1] = 1; act[j].t3 = t->t3;
+                    }
+        } else if (pic == SEENINE || pic == OOZFILTER) {
+            if (s->shade == -31) seenine_arm(i, 0);
+            else if (s->shade == -32) {
+                if (s->lotag > 0) { s->lotag -= 3; if (s->lotag <= 0) s->lotag = -99; }
+                else s->shade = -33;
+            } else if (s->shade == -33 && nboom < 24) boom[nboom++] = (int16_t)i;
+        }
     }
     for (int k = 0; k < nboom; k++) {
         int i = boom[k];

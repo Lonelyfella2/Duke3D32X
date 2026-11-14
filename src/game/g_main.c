@@ -27,17 +27,34 @@ static void blit_view(int pic, int x, int y, int shade, int pal, int flip)
     const dk_tile_t *t = &tiledir[pic];
     const uint8_t *px = (const uint8_t *)DKPTR(t->off);
     const uint8_t *pl8 = palookup[pal & 31] + (max(0, min(31, shade)) << 8);
-    int step = t->shift ? 1 : 2;     /* full-res tiles: take every 2nd pixel */
-    int w = t->w / step, h = t->h / step;
-    for (int cx = 0; cx < w; cx++) {
-        int dx = x + cx;
-        if ((unsigned)dx >= (unsigned)rview.xdim) continue;
-        const uint8_t *col = px + (flip ? (w - 1 - cx) : cx) * step * t->h;
-        for (int cy = 0; cy < h; cy++) {
-            int dy = y + cy;
-            if ((unsigned)dy >= (unsigned)rview.ydim) continue;
-            uint8_t c = col[cy * step];
-            if (c != 255) rview.frame[dy * rview.pitch + dx] = dblpix(pl8[c]);
+    int sh = t->shift;
+    int step = sh ? 1 : 2;     /* full-res tiles: take every 2nd pixel */
+    int w = sh ? t->w : (t->w >> 1);
+    int h = sh ? t->h : (t->h >> 1);
+    int dx0 = x < 0 ? 0 : x, dx1 = x + w;
+    if (dx1 > rview.xdim) dx1 = rview.xdim;
+    int dy0 = y < 0 ? 0 : y, dy1 = y + h;
+    if (dy1 > rview.ydim) dy1 = rview.ydim;
+    if (dx0 >= dx1 || dy0 >= dy1) return;
+    const uint8_t *spans = (t->flags & DKT_SPANS) ? px + t->w * t->h : 0;
+    int th = t->h, pitch = rview.pitch;
+    for (int dx = dx0; dx < dx1; dx++) {
+        int cx = dx - x;
+        int scol = (flip ? (w - 1 - cx) : cx) * step;
+        const uint8_t *col = px + scol * th;
+        int ya = dy0, yb = dy1;
+        if (spans) {
+            int top = spans[scol], bot = spans[t->w + scol];
+            if (!sh) { top = (top + 1) >> 1; bot = (bot + 1) >> 1; }
+            if (y + top > ya) ya = y + top;
+            if (y + bot < yb) yb = y + bot;
+            if (ya >= yb) continue;
+        }
+        int sy = (ya - y) * step;
+        pixel_t *dst = rview.frame + ya * pitch + dx;
+        for (int dy = ya; dy < yb; dy++, sy += step, dst += pitch) {
+            uint8_t c = col[sy];
+            if (c != 255) *dst = dblpix(pl8[c]);
         }
     }
 }
@@ -45,24 +62,64 @@ static void blit_view(int pic, int x, int y, int shade, int pal, int flip)
 /* Duke's rotatesprite() placement of an unscaled 2D tile on the native
  * 320x32 status bar (y = Duke's screen y - 166, the bar's top row):
  * topleft = flag 16 (no centring), otherwise the tile is centred on (x,y)
- * through its picanm offsets.  shade/pal go through the palookup tables. */
+ * through its picanm offsets.  shade/pal go through the palookup tables.
+ * Drawn into a cached strip buffer [hud_cx0, hud_cx1) x [hud_sy0, hud_sy1) then flushed. */
+static int hud_sy0, hud_sy1, hud_cx0, hud_cx1;
 static void hud_pic(uint8_t *hud, int x, int y, int pic, int shade, int pal, int topleft)
 {
     if (!tile_present(pic)) return;
     const dk_tile_t *t = &tiledir[pic];
     if (!topleft) { x -= (t->ow >> 1) + t->xoff; y -= (t->oh >> 1) + t->yoff; }
+    int sh = t->shift;
+    int w = sh ? (t->w << 1) : t->w;
+    int h = sh ? (t->h << 1) : t->h;
+    int dx0 = x < hud_cx0 ? hud_cx0 : x, dx1 = x + w;
+    if (dx1 > hud_cx1) dx1 = hud_cx1;
+    int dy0 = y < hud_sy0 ? hud_sy0 : y, dy1 = y + h;
+    if (dy1 > hud_sy1) dy1 = hud_sy1;
+    if (dx0 >= dx1 || dy0 >= dy1) return;
     const uint8_t *px = (const uint8_t *)DKPTR(t->off);
     const uint8_t *lut = palookup[pal & 31] + (max(0, min(31, shade)) << 8);
-    int sc = t->shift ? 2 : 1;            /* half-res stored tiles: doubled */
-    for (int cx = 0; cx < t->w * sc; cx++) {
-        int dx = x + cx;
-        if ((unsigned)dx >= 320u) continue;
-        const uint8_t *col = px + (cx / sc) * t->h;
-        for (int cy = 0; cy < t->h * sc; cy++) {
-            int dy = y + cy;
-            if ((unsigned)dy >= (unsigned)HUD_LINES_G) continue;
-            uint8_t c = col[cy / sc];
-            if (c != 255) hud[dy * 320 + dx] = lut[c];
+    int th = t->h;
+    if (!sh) {
+        if (!(t->flags & DKT_TRANS)) {
+            for (int dx = dx0; dx < dx1; dx++) {
+                const uint8_t *col = px + (dx - x) * th + (dy0 - y);
+                uint8_t *d = hud + (dy0 - hud_sy0) * 320 + dx;
+                for (int n = dy1 - dy0; n > 0; n--, d += 320) *d = lut[*col++];
+            }
+        } else {
+            for (int dx = dx0; dx < dx1; dx++) {
+                const uint8_t *col = px + (dx - x) * th;
+                int cy = dy0 - y;
+                uint8_t *d = hud + (dy0 - hud_sy0) * 320 + dx;
+                for (int dy = dy0; dy < dy1; dy++, cy++, d += 320) {
+                    uint8_t c = col[cy];
+                    if (c != 255) *d = lut[c];
+                }
+            }
+        }
+    } else if (!(t->flags & DKT_TRANS) && !((dx0 | dy0 | dx1 | dy1 | x | y) & 1)) {
+        for (int dx = dx0; dx < dx1; dx += 2) {
+            const uint8_t *col = px + ((dx - x) >> 1) * th;
+            int sy = (dy0 - y) >> 1;
+            uint8_t *d = hud + (dy0 - hud_sy0) * 320 + dx;
+            for (int dy = dy0; dy < dy1; dy += 2, sy++, d += 640) {
+                uint8_t c = lut[col[sy]];
+                uint16_t cc = (uint16_t)((c << 8) | c);
+                *(uint16_t *)d = cc;
+                *(uint16_t *)(d + 320) = cc;
+            }
+        }
+    } else {
+        for (int dx = dx0; dx < dx1; dx++) {
+            const uint8_t *col = px + ((dx - x) >> 1) * th;
+            int cy = dy0 - y;
+            uint8_t *d = hud + (dy0 - hud_sy0) * 320 + dx;
+            for (int dy = dy0; dy < dy1; dy++, cy++, d += 320) {
+                uint8_t c = col[cy >> 1];
+                if (c != 255) *d = lut[c];
+            }
         }
     }
 }
@@ -126,7 +183,7 @@ static void hud_minitext(uint8_t *hud, int x, int y, const char *t, int pal)
 }
 
 /* ------------------------------------------------------- palette fx */
-static void update_palette(void)
+static void update_palette(int async)
 {
     int mode = 0;
     if (sector[pl.cursectnum].lotag == 2) mode = 1;
@@ -143,12 +200,18 @@ static void update_palette(void)
         if (flash) {
             int r = v & 31, g = (v >> 5) & 31, b = (v >> 10) & 31;
             int k = flash > 12 ? 12 : flash;      /* up to ~30% tint, fading */
-            r += ((pl.pal_r >> 1) - r) * k / 40; g += ((pl.pal_g >> 1) - g) * k / 40; b += ((pl.pal_b >> 1) - b) * k / 40;
+            int dr = ((pl.pal_r >> 1) - r) * k;
+            int dg = ((pl.pal_g >> 1) - g) * k;
+            int db = ((pl.pal_b >> 1) - b) * k;
+            r += (dr >= 0 ? (dr * 205) >> 13 : -((-dr * 205) >> 13));
+            g += (dg >= 0 ? (dg * 205) >> 13 : -((-dg * 205) >> 13));
+            b += (db >= 0 ? (db * 205) >> 13 : -((-db * 205) >> 13));
             v = (uint16_t)(0x8000 | (b << 10) | (g << 5) | r);
         }
         cur_cram[c] = v | 0x8000;
     }
-    plat_set_palette(cur_cram);
+    if (async) plat_set_palette_async(cur_cram);
+    else plat_set_palette(cur_cram);
     shown_pal = 0;
 }
 
@@ -158,65 +221,130 @@ static void update_palette(void)
 static const int16_t inv_icons[INV_NUM] = { FIRSTAID_ICON, STEROIDS_ICON, HOLODUKE_ICON, JETPACK_ICON,
                                             HEAT_ICON, AIRTANK_ICON, BOOT_ICON };
 
+typedef struct {
+    int16_t health, armor, curr_weapon, pct;
+    uint16_t gotweapon;
+    int16_t ammo[MAX_WEAPONS];
+    uint8_t keys, full_ok;
+    int8_t ic, inv_on;
+} hud_snap_t;
+static hud_snap_t hud_prev[2];
+static uint8_t hud_buf_idx;
+
+#define HUD_B_HEALTH 0x01
+#define HUD_B_ARMOR  0x02
+#define HUD_B_COL1   0x04
+#define HUD_B_COL2   0x08
+#define HUD_B_COL3   0x10
+#define HUD_B_CAMMO  0x20
+#define HUD_B_INV    0x40
+#define HUD_B_KEYS   0x80
+#define HUD_B_ALL    0xFF
+
+static void hud_flush_strip(uint8_t *hud_fb, const uint32_t *strip32, int y0, int y1, int x0, int x1)
+{
+    int w0 = x0 >> 2, nw = (x1 - x0) >> 2;
+    if (x0 == 0 && x1 == 320) {
+        int nlines = y1 - y0;
+#ifdef __32X__
+        volatile uint32_t *dst32 = (volatile uint32_t *)(hud_fb + y0 * 320);
+        int tot = nlines * 80;
+        for (int k = 0; k < tot; k++) dst32[k] = strip32[k];
+#else
+        memcpy(hud_fb + y0 * 320, strip32, (size_t)nlines * 320);
+#endif
+    } else {
+        for (int ry = y0; ry < y1; ry++) {
+            const uint32_t *src = strip32 + (ry - y0) * 80 + w0;
+#ifdef __32X__
+            volatile uint32_t *dst = (volatile uint32_t *)(hud_fb + ry * 320) + w0;
+            for (int k = 0; k < nw; k++) dst[k] = src[k];
+#else
+            memcpy(hud_fb + ry * 320 + x0, src, (size_t)nw * 4);
+#endif
+        }
+    }
+}
+
+static void hud_draw_strip(uint8_t *hud_fb, uint32_t *strip32, int y0, int y1, int x0, int x1,
+                           int bar_opaque, uint8_t boxes, int cw, int ic, int inv_on, int pct)
+{
+    uint8_t *hud = (uint8_t *)strip32;
+    int x = 96, y = 182;
+    hud_sy0 = y0; hud_sy1 = y1;
+    hud_cx0 = x0; hud_cx1 = x1;
+    if (!bar_opaque) memset(strip32, 0, (size_t)(y1 - y0) * 320);
+    hud_pic(hud, 0, 0, BOTTOMSTATUSBAR, 0, 0, 1);
+
+#define GOT(w) ((pl.gotweapon & (1 << (w))) != 0)
+    if (boxes & HUD_B_KEYS) {
+        if (pl.keys & 4) hud_pic(hud, 275, SBAR_Y(182), ACCESS_ICON, 0, 23, 1);
+        if (pl.keys & 2) hud_pic(hud, 288, SBAR_Y(182), ACCESS_ICON, 0, 21, 1);
+        if (pl.keys & 1) hud_pic(hud, 281, SBAR_Y(189), ACCESS_ICON, 0, 0, 1);
+    }
+    if (boxes & HUD_B_COL1) {
+        hud_weaponnum(hud, PISTOL_WEAPON, x, y, pl.ammo[PISTOL_WEAPON], weapon_maxammo(PISTOL_WEAPON),
+                      12 - 20 * (cw == PISTOL_WEAPON), 1);
+        hud_weaponnum(hud, SHOTGUN_WEAPON, x, y + 6, pl.ammo[SHOTGUN_WEAPON], weapon_maxammo(SHOTGUN_WEAPON),
+                      (!GOT(SHOTGUN_WEAPON)) * 9 + 12 - 18 * (cw == SHOTGUN_WEAPON), 1);
+        hud_weaponnum(hud, CHAINGUN_WEAPON, x, y + 12, pl.ammo[CHAINGUN_WEAPON], weapon_maxammo(CHAINGUN_WEAPON),
+                      (!GOT(CHAINGUN_WEAPON)) * 9 + 12 - 18 * (cw == CHAINGUN_WEAPON), 1);
+    }
+    if (boxes & HUD_B_COL2) {
+        hud_weaponnum(hud, RPG_WEAPON, x + 39, y, pl.ammo[RPG_WEAPON], weapon_maxammo(RPG_WEAPON),
+                      (!GOT(RPG_WEAPON)) * 9 + 12 - 19 * (cw == RPG_WEAPON), 0);
+        hud_weaponnum(hud, HANDBOMB_WEAPON, x + 39, y + 6, pl.ammo[HANDBOMB_WEAPON], weapon_maxammo(HANDBOMB_WEAPON),
+                      ((!pl.ammo[HANDBOMB_WEAPON]) | (!GOT(HANDBOMB_WEAPON))) * 9 + 12 -
+                      19 * (cw == HANDBOMB_WEAPON || cw == HANDREMOTE_WEAPON), 0);
+        hud_weaponnum(hud, SHRINKER_WEAPON, x + 39, y + 12, pl.ammo[SHRINKER_WEAPON], weapon_maxammo(SHRINKER_WEAPON),
+                      (!GOT(SHRINKER_WEAPON)) * 9 + 12 - 18 * (cw == SHRINKER_WEAPON || cw == GROW_WEAPON), 0);
+    }
+    if (boxes & HUD_B_COL3) {
+        hud_weaponnum(hud, DEVISTATOR_WEAPON, x + 70, y, pl.ammo[DEVISTATOR_WEAPON], weapon_maxammo(DEVISTATOR_WEAPON),
+                      (!GOT(DEVISTATOR_WEAPON)) * 9 + 12 - 18 * (cw == DEVISTATOR_WEAPON), 0);
+        hud_weaponnum(hud, TRIPBOMB_WEAPON, x + 70, y + 6, pl.ammo[TRIPBOMB_WEAPON], weapon_maxammo(TRIPBOMB_WEAPON),
+                      (!GOT(TRIPBOMB_WEAPON)) * 9 + 12 - 18 * (cw == TRIPBOMB_WEAPON), 0);
+        hud_weaponnum(hud, -1, x + 70, y + 12, pl.ammo[FREEZE_WEAPON], weapon_maxammo(FREEZE_WEAPON),
+                      (!GOT(FREEZE_WEAPON)) * 9 + 12 - 18 * (cw == FREEZE_WEAPON), 0);
+    }
+#undef GOT
+    if (boxes & HUD_B_HEALTH) hud_digital(hud, 32, 200 - 17, pl.health);
+    if (boxes & HUD_B_ARMOR)  hud_digital(hud, 64, 200 - 17, pl.armor);
+    if ((boxes & HUD_B_CAMMO) && cw != KNEE_WEAPON) {
+        int w = (cw == HANDREMOTE_WEAPON) ? HANDBOMB_WEAPON : cw;
+        hud_digital(hud, 230 - 22, 200 - 17, pl.ammo[w]);
+    }
+    if ((boxes & HUD_B_INV) && ic >= 0) {
+        hud_pic(hud, 231, SBAR_Y(200 - 21), inv_icons[ic], 0, 0, 1);
+        hud_minitext(hud, 292 - 30, 190, "%", 6);
+        if (ic >= INV_SCUBA) hud_minitext(hud, 284 - 35, 180, "AUTO", 2);
+        if (inv_on > 0) hud_minitext(hud, 288 - 30, 180, "ON", 0);
+        else if (inv_on == 0) hud_minitext(hud, 284 - 30, 180, "OFF", 2);
+        static const int8_t inv_xs[3][3] = { { 4 }, { 0, 4 }, { -4, 0, 4 } };   /* GAME.C invennum() */
+        hud_3x5_number(hud, pct, inv_xs, 284 - 30, 200 - 6, 0, 0);
+    }
+    hud_flush_strip(hud_fb, strip32, y0, y1, x0, x1);
+}
+
 static void draw_hud(void)
 {
     if (hud_dirty <= 0) return;
     hud_dirty--;
-    uint8_t *hud = (uint8_t *)plat_hud_base();
-    memset(hud, 0, 320 * HUD_LINES_G);
-    hud_pic(hud, 0, 0, BOTTOMSTATUSBAR, 0, 0, 1);        /* bar rows 0..31 (32/33 are blank) */
+    uint8_t *hud_fb = (uint8_t *)plat_hud_base();
+    uint32_t strip32[12 * 80];
+    int bar_opaque = tile_present(BOTTOMSTATUSBAR) && !(tiledir[BOTTOMSTATUSBAR].flags & DKT_TRANS) &&
+                     ((tiledir[BOTTOMSTATUSBAR].w << tiledir[BOTTOMSTATUSBAR].shift) >= 320) &&
+                     ((tiledir[BOTTOMSTATUSBAR].h << tiledir[BOTTOMSTATUSBAR].shift) >= HUD_LINES_G);
 
-    /* keys (got_access 4/2/1 = yellow/red/blue cards) */
-    if (pl.keys & 4) hud_pic(hud, 275, SBAR_Y(182), ACCESS_ICON, 0, 23, 1);
-    if (pl.keys & 2) hud_pic(hud, 288, SBAR_Y(182), ACCESS_ICON, 0, 21, 1);
-    if (pl.keys & 1) hud_pic(hud, 281, SBAR_Y(189), ACCESS_ICON, 0, 0, 1);
-
-    /* weapon_amounts(p, 96, 182): N:ammo/max, the held weapon brighter */
-    int cw = pl.curr_weapon, x = 96, y = 182;
-#define GOT(w)  ((pl.gotweapon & (1 << (w))) != 0)
-    hud_weaponnum(hud, PISTOL_WEAPON, x, y, pl.ammo[PISTOL_WEAPON], weapon_maxammo(PISTOL_WEAPON),
-                  12 - 20 * (cw == PISTOL_WEAPON), 1);
-    hud_weaponnum(hud, SHOTGUN_WEAPON, x, y + 6, pl.ammo[SHOTGUN_WEAPON], weapon_maxammo(SHOTGUN_WEAPON),
-                  (!GOT(SHOTGUN_WEAPON)) * 9 + 12 - 18 * (cw == SHOTGUN_WEAPON), 1);
-    hud_weaponnum(hud, CHAINGUN_WEAPON, x, y + 12, pl.ammo[CHAINGUN_WEAPON], weapon_maxammo(CHAINGUN_WEAPON),
-                  (!GOT(CHAINGUN_WEAPON)) * 9 + 12 - 18 * (cw == CHAINGUN_WEAPON), 1);
-    hud_weaponnum(hud, RPG_WEAPON, x + 39, y, pl.ammo[RPG_WEAPON], weapon_maxammo(RPG_WEAPON),
-                  (!GOT(RPG_WEAPON)) * 9 + 12 - 19 * (cw == RPG_WEAPON), 0);
-    hud_weaponnum(hud, HANDBOMB_WEAPON, x + 39, y + 6, pl.ammo[HANDBOMB_WEAPON], weapon_maxammo(HANDBOMB_WEAPON),
-                  ((!pl.ammo[HANDBOMB_WEAPON]) | (!GOT(HANDBOMB_WEAPON))) * 9 + 12 -
-                  19 * (cw == HANDBOMB_WEAPON || cw == HANDREMOTE_WEAPON), 0);
-    hud_weaponnum(hud, SHRINKER_WEAPON, x + 39, y + 12, pl.ammo[SHRINKER_WEAPON], weapon_maxammo(SHRINKER_WEAPON),
-                  (!GOT(SHRINKER_WEAPON)) * 9 + 12 - 18 * (cw == SHRINKER_WEAPON || cw == GROW_WEAPON), 0);
-    hud_weaponnum(hud, DEVISTATOR_WEAPON, x + 70, y, pl.ammo[DEVISTATOR_WEAPON], weapon_maxammo(DEVISTATOR_WEAPON),
-                  (!GOT(DEVISTATOR_WEAPON)) * 9 + 12 - 18 * (cw == DEVISTATOR_WEAPON), 0);
-    hud_weaponnum(hud, TRIPBOMB_WEAPON, x + 70, y + 6, pl.ammo[TRIPBOMB_WEAPON], weapon_maxammo(TRIPBOMB_WEAPON),
-                  (!GOT(TRIPBOMB_WEAPON)) * 9 + 12 - 18 * (cw == TRIPBOMB_WEAPON), 0);
-    hud_weaponnum(hud, -1, x + 70, y + 12, pl.ammo[FREEZE_WEAPON], weapon_maxammo(FREEZE_WEAPON),
-                  (!GOT(FREEZE_WEAPON)) * 9 + 12 - 18 * (cw == FREEZE_WEAPON), 0);
-#undef GOT
-
-    /* health, armour, current ammo */
-    hud_digital(hud, 32, 200 - 17, pl.health);
-    hud_digital(hud, 64, 200 - 17, pl.armor);
-    if (cw != KNEE_WEAPON) {
-        int w = (cw == HANDREMOTE_WEAPON) ? HANDBOMB_WEAPON : cw;
-        hud_digital(hud, 230 - 22, 200 - 17, pl.ammo[w]);
-    }
-
-    /* inventory: icon, ON/OFF/AUTO, percentage */
+    /* Precompute inventory values once */
+    int cw = pl.curr_weapon;
     int ic = pl.inven_icon;
+    int inv_on = -1, pct = 0;
     if (ic >= 0 && ic < INV_NUM && pl.inv[ic] > 0) {
-        hud_pic(hud, 231, SBAR_Y(200 - 21), inv_icons[ic], 0, 0, 1);
-        hud_minitext(hud, 292 - 30, 190, "%", 6);
-        if (ic >= INV_SCUBA) hud_minitext(hud, 284 - 35, 180, "AUTO", 2);
-        int on = -1;
-        if (ic == INV_HOLODUKE) on = (pl.holoduke_on > 0 && pl.holoduke_on < MAXSPRITES &&
-                                      sprite[pl.holoduke_on].statnum == STAT_DUMMYPLAYER);
-        if (ic == INV_JETPACK) on = pl.jetpack_on != 0;
-        if (ic == INV_HEATS) on = pl.heat_on != 0;
-        if (on > 0) hud_minitext(hud, 288 - 30, 180, "ON", 0);
-        else if (on == 0) hud_minitext(hud, 284 - 30, 180, "OFF", 2);
-        int pct = 0;
+        if (ic == INV_HOLODUKE) inv_on = (pl.holoduke_on > 0 && pl.holoduke_on < MAXSPRITES &&
+                                          sprite[pl.holoduke_on].statnum == STAT_DUMMYPLAYER);
+        if (ic == INV_JETPACK) inv_on = pl.jetpack_on != 0;
+        if (ic == INV_HEATS) inv_on = pl.heat_on != 0;
         switch (ic) {
         case INV_FIRSTAID: pct = pl.inv[INV_FIRSTAID]; break;
         case INV_STEROIDS: pct = (pl.inv[INV_STEROIDS] + 3) >> 2; break;
@@ -226,9 +354,81 @@ static void draw_hud(void)
         case INV_SCUBA:    pct = (pl.inv[INV_SCUBA] + 63) >> 6; break;
         case INV_BOOTS:    pct = pl.inv[INV_BOOTS] >> 1; break;
         }
-        static const int8_t inv_xs[3][3] = { { 4 }, { 0, 4 }, { -4, 0, 4 } };   /* GAME.C invennum() */
-        hud_3x5_number(hud, pct, inv_xs, 284 - 30, 200 - 6, 0, 0);
+    } else ic = -1;
+
+    hud_snap_t *s = &hud_prev[hud_buf_idx & 1];
+    if (!s->full_ok) {
+        /* Full HUD draw: rows 0..12 (background only), 12..22, 22..32 */
+        hud_draw_strip(hud_fb, strip32, 0, 12, 0, 320, bar_opaque, 0, cw, ic, inv_on, pct);
+        hud_draw_strip(hud_fb, strip32, 12, 22, 0, 320, bar_opaque, HUD_B_ALL, cw, ic, inv_on, pct);
+        hud_draw_strip(hud_fb, strip32, 22, HUD_LINES_G, 0, 320, bar_opaque, HUD_B_ALL, cw, ic, inv_on, pct);
+        s->full_ok = 1;
+    } else {
+        uint8_t boxes = 0;
+        if (pl.health != s->health) boxes |= HUD_B_HEALTH;
+        if (pl.armor  != s->armor)  boxes |= HUD_B_ARMOR;
+        if (pl.keys   != s->keys)   boxes |= HUD_B_KEYS;
+        if (ic != s->ic || inv_on != s->inv_on || pct != s->pct) boxes |= HUD_B_INV;
+        if (cw != s->curr_weapon) {
+            boxes |= HUD_B_CAMMO;
+            int ocw = s->curr_weapon;
+            if (ocw == PISTOL_WEAPON || ocw == SHOTGUN_WEAPON || ocw == CHAINGUN_WEAPON ||
+                cw  == PISTOL_WEAPON || cw  == SHOTGUN_WEAPON || cw  == CHAINGUN_WEAPON) boxes |= HUD_B_COL1;
+            if (ocw == RPG_WEAPON || ocw == HANDBOMB_WEAPON || ocw == HANDREMOTE_WEAPON ||
+                ocw == SHRINKER_WEAPON || ocw == GROW_WEAPON ||
+                cw  == RPG_WEAPON || cw  == HANDBOMB_WEAPON || cw  == HANDREMOTE_WEAPON ||
+                cw  == SHRINKER_WEAPON || cw  == GROW_WEAPON) boxes |= HUD_B_COL2;
+            if (ocw == DEVISTATOR_WEAPON || ocw == TRIPBOMB_WEAPON || ocw == FREEZE_WEAPON ||
+                cw  == DEVISTATOR_WEAPON || cw  == TRIPBOMB_WEAPON || cw  == FREEZE_WEAPON) boxes |= HUD_B_COL3;
+        }
+        int cur_w = (cw == HANDREMOTE_WEAPON) ? HANDBOMB_WEAPON : cw;
+        if (cw != KNEE_WEAPON && pl.ammo[cur_w] != s->ammo[cur_w]) boxes |= HUD_B_CAMMO;
+        if (pl.gotweapon != s->gotweapon) boxes |= (HUD_B_COL1 | HUD_B_COL2 | HUD_B_COL3);
+        if (pl.ammo[PISTOL_WEAPON] != s->ammo[PISTOL_WEAPON] ||
+            pl.ammo[SHOTGUN_WEAPON] != s->ammo[SHOTGUN_WEAPON] ||
+            pl.ammo[CHAINGUN_WEAPON] != s->ammo[CHAINGUN_WEAPON]) boxes |= HUD_B_COL1;
+        if (pl.ammo[RPG_WEAPON] != s->ammo[RPG_WEAPON] ||
+            pl.ammo[HANDBOMB_WEAPON] != s->ammo[HANDBOMB_WEAPON] ||
+            pl.ammo[SHRINKER_WEAPON] != s->ammo[SHRINKER_WEAPON]) boxes |= HUD_B_COL2;
+        if (pl.ammo[DEVISTATOR_WEAPON] != s->ammo[DEVISTATOR_WEAPON] ||
+            pl.ammo[TRIPBOMB_WEAPON] != s->ammo[TRIPBOMB_WEAPON] ||
+            pl.ammo[FREEZE_WEAPON] != s->ammo[FREEZE_WEAPON]) boxes |= HUD_B_COL3;
+
+        if (!boxes) return;
+        static const struct { uint8_t bit; int16_t x0, x1, y0, y1; } regs[8] = {
+            { HUD_B_HEALTH,  20,  44, 17, 27 },
+            { HUD_B_ARMOR,   52,  76, 17, 27 },
+            { HUD_B_COL1,    88, 124, 12, 30 },
+            { HUD_B_COL2,   128, 156, 12, 30 },
+            { HUD_B_COL3,   156, 188, 12, 30 },
+            { HUD_B_CAMMO,  196, 220, 17, 27 },
+            { HUD_B_INV,    228, 272, 12, 32 },
+            { HUD_B_KEYS,   272, 300, 16, 28 },
+        };
+        for (int i = 0; i < 8; i++) {
+            if (!(boxes & regs[i].bit)) continue;
+            int ry0 = regs[i].y0, ry1 = regs[i].y1;
+            if (ry1 - ry0 <= 12) {
+                hud_draw_strip(hud_fb, strip32, ry0, ry1, regs[i].x0, regs[i].x1,
+                               bar_opaque, regs[i].bit, cw, ic, inv_on, pct);
+            } else {
+                int mid = (ry0 + ry1) >> 1;
+                hud_draw_strip(hud_fb, strip32, ry0, mid, regs[i].x0, regs[i].x1,
+                               bar_opaque, regs[i].bit, cw, ic, inv_on, pct);
+                hud_draw_strip(hud_fb, strip32, mid, ry1, regs[i].x0, regs[i].x1,
+                               bar_opaque, regs[i].bit, cw, ic, inv_on, pct);
+            }
+        }
     }
+    s->health = (int16_t)pl.health;
+    s->armor = (int16_t)pl.armor;
+    s->curr_weapon = (int16_t)cw;
+    s->gotweapon = pl.gotweapon;
+    s->keys = pl.keys;
+    s->ic = (int8_t)ic;
+    s->inv_on = (int8_t)inv_on;
+    s->pct = (int16_t)pct;
+    memcpy(s->ammo, pl.ammo, sizeof(s->ammo));
 }
 
 /* ---------------------------------------------------- weapon display */
@@ -268,6 +468,10 @@ static uint8_t weapon_opaque_zero(void)
     return cached_oz;
 }
 
+static uint8_t wlut[256];
+static const uint8_t *wlut_src;
+static uint8_t wlut_oz;
+
 static void weapon_pic(int x, int y, int pic, int shade, int pal, int flip)
 {
     if (!tile_present(pic)) return;
@@ -282,19 +486,40 @@ static void weapon_pic(int x, int y, int pic, int shade, int pal, int flip)
         const uint8_t *px = (const uint8_t *)DKPTR(t->off);
         const uint8_t *lut = palookup[pal & 31] + (max(0, min(31, shade)) << 8);
         const uint8_t opaque_zero = weapon_opaque_zero();
-        for (int sy = 0; sy < t->h; sy++) {
-            int dy = top + sy;
-            if ((unsigned)dy >= (unsigned)(rview.ydim * 2)) continue;
-            uint8_t *line = plat_text_line(dy);
-            if (!line) continue;
-            for (int sx = 0; sx < t->w; sx++) {
-                int dx = left + sx;
-                if ((unsigned)dx >= (unsigned)(rview.xdim * 2)) continue;
-                uint8_t c = px[(flip ? t->w - 1 - sx : sx) * t->h + sy];
-                if (c != 255) {
-                    uint8_t shaded = lut[c];
-                    line[dx] = shaded ? shaded : opaque_zero;
-                }
+        int dx0 = left < 0 ? 0 : left, dx1 = left + t->w;
+        if (dx1 > rview.xdim * 2) dx1 = rview.xdim * 2;
+        int dy0 = top < 0 ? 0 : top, dy1 = top + t->h;
+        if (dy1 > rview.ydim * 2) dy1 = rview.ydim * 2;
+        if (dx0 >= dx1 || dy0 >= dy1) return;
+        uint8_t *base = plat_text_span(dy0, dy1);
+        if (!base) return;
+        if (wlut_src != lut || wlut_oz != opaque_zero) {
+            wlut_src = lut;
+            wlut_oz = opaque_zero;
+            for (int i = 0; i < 256; i++) {
+                uint8_t s = lut[i];
+                wlut[i] = s ? s : opaque_zero;
+            }
+        }
+        const uint8_t *wl = wlut;
+        const uint8_t *spans = (t->flags & DKT_SPANS) ? px + t->w * t->h : 0;
+        int th = t->h, tw = t->w;
+        for (int dx = dx0; dx < dx1; dx++) {
+            int sx = dx - left;
+            int scol = flip ? (tw - 1 - sx) : sx;
+            const uint8_t *col = px + scol * th;
+            int ya = dy0, yb = dy1;
+            if (spans) {
+                int s0 = top + spans[scol], s1 = top + spans[tw + scol];
+                if (s0 > ya) ya = s0;
+                if (s1 < yb) yb = s1;
+                if (ya >= yb) continue;
+            }
+            const uint8_t *src = col + (ya - top);
+            volatile uint8_t *dst = base + (ya - dy0) * 320 + dx;
+            for (int n = yb - ya; n > 0; n--, dst += 320) {
+                uint8_t c = *src++;
+                if (c != 255) *dst = wl[c];
             }
         }
     } else blit_view(pic, left >> 1, top >> 1, shade, pal, flip);
@@ -528,18 +753,55 @@ static void menu_cursor(int y, int w)
     }
 }
 
+static int god_seq_step(uint32_t e, int *seq)
+{
+    static const uint32_t code[5] = { BTN_UP, BTN_DOWN, BTN_UP, BTN_DOWN, BTN_START };
+    if (!e) return 0;
+    if (e == code[*seq]) {
+        if (++(*seq) == 5) { *seq = 0; return 1; }
+    } else {
+        *seq = (e == BTN_UP) ? 1 : 0;
+    }
+    return 0;
+}
+
+static void toggle_god_mode(void)
+{
+    pl.cheat_god = !pl.cheat_god;
+    if (pl.cheat_god) {
+        if (pl.i >= 0 && pl.i < MAXSPRITES) {
+            sprite[pl.i].cstat = 1 | 256 | 32768;
+            sprite[pl.i].pal = 0;
+            sprite[pl.i].xrepeat = sprite[pl.i].yrepeat = 42;
+            sprite[pl.i].extra = CON_MAXPLAYERHEALTH;
+        }
+        pl.health = CON_MAXPLAYERHEALTH;
+        pl.shrunk = 0;
+        pl.pal_time = 0;
+        player_quote(17);   /* GOD MODE: ON */
+    } else {
+        player_quote(18);   /* GOD MODE: OFF */
+    }
+    hud_dirty = 2;
+}
+
 #define PAUSE_Y0 64
 #define PAUSE_DY 22
 
 /* START menu (pause): weapon/inventory selection for 3-button pads */
 static int pause_menu(void)
 {
-    int sel = 0, done = 0;
+    int sel = 0, done = 0, god_seq = 0;
     static const char *items[] = { "RESUME", "NEXT WEAPON", "NEXT ITEM", "USE ITEM", "QUIT TO TITLE" };
     uint32_t prev = pad_now;
     while (!done) {
         uint32_t p = plat_read_input(), e = p & ~prev;
         prev = p;
+        if (god_seq_step(e, &god_seq)) {
+            toggle_god_mode();
+            done = 1;
+            break;
+        }
         if (e & BTN_UP) sel = (sel + 4) % 5;
         if (e & BTN_DOWN) sel = (sel + 1) % 5;
         if (e & (BTN_START | BTN_B | BTN_C)) {
@@ -565,9 +827,13 @@ static int pause_menu(void)
         for (int k = 0; k < 5; k++)
             dfont_center(PAUSE_Y0 + k * PAUSE_DY, items[k], dk_cram);
         menu_cursor(PAUSE_Y0 + sel * PAUSE_DY, dfont_width(items[sel]));
+        hud_prev[0].full_ok = hud_prev[1].full_ok = 0;
         hud_dirty = 2; draw_hud();
+        hud_buf_idx ^= 1;
         plat_flip();
     }
+    hud_prev[0].full_ok = hud_prev[1].full_ok = 0;
+    hud_dirty = 2;
     pad_prev = pad_now = plat_read_input();
     return done;
 }
@@ -618,6 +884,7 @@ void game_level_start(int idx)
     level_index = idx;
     gametic = 0;
     totalclock = 0;
+    hud_prev[0].full_ok = hud_prev[1].full_ok = 0;
     hud_dirty = 2;
     cur_palmode = -1;
     const dk_map_t *mi = engine_mapinfo(idx);
@@ -656,13 +923,14 @@ static void render_game(void)
         rview.sectnum = c->sectnum; rview.horiz = 100;
         if (sync1.fvel || sync1.svel || (pad_now & (BTN_B | BTN_C))) camsprite = -1;
     }
-    if (!shown_pal) update_palette();      /* else: after the first flip (play_level) */
+    if (!shown_pal) update_palette(1);      /* else: after the first flip (play_level) */
     txt_palette(0);
     plat_frame_begin();
-    plat_render_view();
+    plat_render_begin();
+    draw_hud();
+    plat_render_end();
     if (camsprite < 0) draw_weapon();
     draw_view_overlays();
-    draw_hud();
 }
 
 static int play_level(void)
@@ -671,6 +939,7 @@ static int play_level(void)
     int32_t acc = 0;
     int pal = plat_pal();
     int deadwait = 0;
+    int god_seq = 0;
     uint32_t frames = 0;
     pad_prev = pad_now = plat_read_input();
     for (;;) {
@@ -682,10 +951,13 @@ static int play_level(void)
         while (acc >= rate && n < 4) {
             pad_prev = pad_now;
             pad_now = plat_read_input();
-            if ((pad_now & ~pad_prev) & BTN_START) {
+            uint32_t e = pad_now & ~pad_prev;
+            if (!pl.dead_flag && god_seq_step(e, &god_seq)) {
+                toggle_god_mode();
+            } else if (e & BTN_START) {
                 plat_flip_wait();
                 if (pl.dead_flag && deadwait > 30) return 0;
-                if (!pl.dead_flag) { int r = pause_menu(); if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
+                if (!pl.dead_flag) { int r = pause_menu(); god_seq = 0; if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
             }
             game_tick();
             acc -= rate;
@@ -701,9 +973,12 @@ static int play_level(void)
             while (acc >= rate && n < 4) {
                 pad_prev = pad_now;
                 pad_now = plat_read_input();
-                if ((pad_now & ~pad_prev) & BTN_START) {
+                uint32_t e = pad_now & ~pad_prev;
+                if (!pl.dead_flag && god_seq_step(e, &god_seq)) {
+                    toggle_god_mode();
+                } else if (e & BTN_START) {
                     if (pl.dead_flag && deadwait > 30) return 0;
-                    if (!pl.dead_flag) { int r = pause_menu(); if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
+                    if (!pl.dead_flag) { int r = pause_menu(); god_seq = 0; if (r < 0) return -1; last = plat_ticks(); acc = 0; if (r == 2) { player_process(); } }
                 }
                 game_tick();
                 acc -= rate;
@@ -716,10 +991,11 @@ static int play_level(void)
         if (shown_pal) {
             plat_flip();
             cur_palmode = -1;
-            update_palette();   /* picture palette out */
+            update_palette(0);   /* picture palette out */
         } else {
             plat_flip_request();
         }
+        hud_buf_idx ^= 1;
         frames++;
         plat_telemetry((uint16_t)(0x3000 | (level_index << 8) | (pl.health & 0xff)), (uint16_t)frames);
     }
