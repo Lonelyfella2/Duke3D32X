@@ -23,7 +23,7 @@ static int frames_to_wait;
 static jmp_buf done_jmp;
 
 static rstats_t mirror_seen = { .mirror_wall = -1 };
-void plat_render_view(void)
+void plat_render_begin(void)
 {
     rview.frame = &fb[cur][0][0]; rview.pitch = 160; rview.xdim = 160; rview.ydim = 96;
     if (mirror_seen.mirror_wall >= 0) render_mirror(&mirror_seen);
@@ -31,8 +31,15 @@ void plat_render_view(void)
     render_frame_s(80, 159);
     render_merge_mirror(&mirror_seen, &rstats_m, &rstats_s);
 }
+void plat_render_end(void) {}
+void plat_render_view(void) { plat_render_begin(); plat_render_end(); }
 pixel_t *plat_hud_base(void) { return &fb[cur][96][0]; }
 pixel_t *plat_view_base(void) { return &fb[cur][0][0]; }
+uint8_t *plat_text_span(int y0, int y1)
+{
+    for (int y = y0; y < y1; y++) plat_text_line(y);
+    return plat_text_line(y0);
+}
 uint8_t *plat_text_line(int sy)
 {
     if ((unsigned)sy >= 224u) return 0;
@@ -52,6 +59,7 @@ void plat_frame_begin(void) { memset(txt_on[cur], 0, sizeof txt_on[cur]); }
 uint32_t plat_ticks(void) { return ticks; }
 int plat_pal(void) { return 0; }
 void plat_set_palette(const uint16_t *c) { memcpy(cram, c, 512); }
+void plat_set_palette_async(const uint16_t *c) { plat_set_palette(c); }
 void plat_telemetry(uint16_t a, uint16_t b) { (void)a; (void)b; }
 void plat_sound_play(int id, int vol, int pan, int32_t pitch, int loop, int tag)
 { fprintf(stderr, "  [snd %d vol %d pan %d%s]\n", id, vol, pan, loop ? " loop" : ""); (void)pitch; (void)tag; }
@@ -187,7 +195,7 @@ void plat_flip(void)
             continue; }
         if (!strcmp(cmd, "sprite_status")) {
             int n = atoi(a1);
-            fprintf(stderr, "sprite_status %d: pic %d tag %d sect %d xy %d,%d z %d\n", n, sprite[n].picnum, sprite[n].lotag, sprite[n].sectnum, sprite[n].x, sprite[n].y, sprite[n].z);
+            fprintf(stderr, "sprite_status %d: pic %d tag %d sect %d xy %d,%d z %d ang %d\n", n, sprite[n].picnum, sprite[n].lotag, sprite[n].sectnum, sprite[n].x, sprite[n].y, sprite[n].z, sprite[n].ang);
             continue; }
         if (!strcmp(cmd, "wall_status")) {
             int n = atoi(a1);
